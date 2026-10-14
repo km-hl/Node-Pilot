@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .common import PilotError, atomic_json, fsync_dir, private_dir, run, run_bytes
 from .download import github_release, verified_asset
+from .releases import MINIMUM, REPOSITORIES, release, stable_versions, version
 from .system import architecture
 
 
@@ -52,23 +53,31 @@ class Cores:
             raise PilotError(f"{core} 未安装；请先在菜单安装/更新官方内核。")
         return path
 
-    def stage(self, core):
+    def installed_version(self, core):
+        path = self.binary(core).parent / "verified.json"
+        from .common import read_json
+        return read_json(path)["version"]
+
+    def versions(self, core):
+        if core not in REPOSITORIES:
+            raise PilotError("非法内核。")
+        return stable_versions(REPOSITORIES[core], MINIMUM[core])
+
+    def stage(self, core, selected="latest"):
         if core not in {"xray", "sing-box", "caddy"}:
             raise PilotError("非法内核。")
         arch = architecture()
         parent = private_dir(self.root / core)
-        repo = {"xray": "XTLS/Xray-core", "sing-box": "SagerNet/sing-box", "caddy": "caddyserver/caddy"}[core]
+        repo = REPOSITORIES[core]
         with tempfile.TemporaryDirectory(prefix="download-", dir=parent) as tmp:
-            release = github_release(repo, tmp)
-            version = release["tag_name"].lstrip("v")
-            if core == "sing-box" and tuple(map(int, version.split("."))) < (1, 12, 0):
-                raise PilotError("AnyTLS 需要 sing-box >= 1.12.0。")
-            if core == "caddy" and tuple(map(int, version.split("."))) < (2, 7, 0):
-                raise PilotError("Reality 本机目标需要 Caddy >= 2.7.0 的内置 PROXY wrapper。")
+            record = github_release(repo, tmp) if selected == "latest" else release(repo, selected)
+            core_version = record["tag_name"].lstrip("v")
+            if version(core_version) < MINIMUM[core]:
+                raise PilotError(f"{core} 版本低于本项目支持范围：{'.'.join(map(str, MINIMUM[core]))}。")
             name = (f"Xray-linux-{'64' if arch == 'amd64' else 'arm64-v8a'}.zip" if core == "xray"
-                    else f"caddy_{version}_linux_{arch}.tar.gz" if core == "caddy"
-                    else f"sing-box-{version}-linux-{arch}.tar.gz")
-            assets = [a for a in release["assets"] if a["name"] == name]
+                    else f"caddy_{core_version}_linux_{arch}.tar.gz" if core == "caddy"
+                    else f"sing-box-{core_version}-linux-{arch}.tar.gz")
+            assets = [a for a in record["assets"] if a["name"] == name]
             if len(assets) != 1:
                 raise PilotError(f"稳定版未提供架构对应附件：{name}")
             archive = verified_asset(assets[0], tmp)
@@ -77,12 +86,12 @@ class Cores:
             verify_elf(candidate, arch)
             candidate.chmod(0o700)
             output = run([candidate, "version"], timeout=15)
-            if not re.search(r"(?<![\d.])" + re.escape(version) + r"(?![\d.])", output):
+            if not re.search(r"(?<![\d.])" + re.escape(core_version) + r"(?![\d.])", output):
                 raise PilotError("二进制报告版本与官方发布版本不一致。")
-            destination = parent / (version + "-" + os.urandom(4).hex())
+            destination = parent / (core_version + "-" + os.urandom(4).hex())
             private_dir(destination)
             shutil.copy2(candidate, destination / core)
-            atomic_json(destination / "verified.json", {"version": version, "architecture": arch,
+            atomic_json(destination / "verified.json", {"version": core_version, "architecture": arch,
                         "source": assets[0]["browser_download_url"], "digest": assets[0]["digest"]})
             return destination
 

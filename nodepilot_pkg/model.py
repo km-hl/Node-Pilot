@@ -50,6 +50,9 @@ def validate(n):
     if n.get("protocol") not in PROTOCOLS:
         raise PilotError("只支持 reality、anytls、hysteria2。")
     core, transport = PROTOCOLS[n["protocol"]]
+    imported = isinstance(n.get("adoption"), str) and bool(re.fullmatch(r"a-[0-9a-f]{16}", n["adoption"]))
+    if "adoption" in n and not imported:
+        raise PilotError("非法接管记录 ID。")
     if n.get("core") != core or n.get("transport") != transport or n.get("service") != f"nodepilot-{n['id']}.service":
         raise PilotError("节点内核、传输方式或服务关联不一致。")
     if not isinstance(n.get("name"), str) or not 1 <= len(n["name"]) <= 80 or any(ord(c) < 32 or ord(c) == 127 for c in n["name"]):
@@ -70,7 +73,7 @@ def validate(n):
             raise PilotError("Reality UUID 格式无效。") from e
         key(r["private_key"])
         key(r["public_key"])
-        if not re.fullmatch(r"(?:[0-9a-fA-F]{2}){1,8}", r["short_id"]):
+        if not re.fullmatch(r"(?:[0-9a-fA-F]{2}){" + ("0" if imported else "1") + r",8}", r["short_id"]):
             raise PilotError("shortId 必须为 2–16 位偶数长度十六进制。")
         if not r["server_names"] or n["sni"] not in r["server_names"]:
             raise PilotError("客户端 SNI 必须包含在 Reality serverNames 中。")
@@ -84,6 +87,8 @@ def validate(n):
             raise PilotError("不支持的客户端 uTLS fingerprint。")
         if r.get("mode", "external") not in {"self", "external"}:
             raise PilotError("非法 Reality 目标模式。")
+        if type(r.get("xver", 0)) is not int or r.get("xver", 0) not in {0, 1}:
+            raise PilotError("Reality PROXY protocol 仅支持 0/1。")
         if r.get("mode") == "self":
             c = n.get("caddy", {})
             if is_ip(n["sni"]) or c.get("domain") != n["sni"] or r["server_names"] != [n["sni"]]:
@@ -103,9 +108,14 @@ def validate(n):
                 if is_ip(h) or p != 443:
                     raise PilotError("网页来源须为 HTTPS 域名:443。")
     else:
-        if not isinstance(n.get("password"), str) or len(n["password"]) < 16 or any(ord(c) < 32 for c in n["password"]):
+        if not isinstance(n.get("password"), str) or len(n["password"]) < (1 if imported else 16) or any(ord(c) < 32 for c in n["password"]):
             raise PilotError("密码至少 16 字符且不能包含控制字符。")
         tls = n["tls"]
+        if tls.get("min_version", "1.3") not in ({"1.2", "1.3"} if imported else {"1.3"}):
+            raise PilotError("新建 TLS 节点使用 TLS 1.3；导入可保留 TLS 1.2。")
+        if tls.get("alpn") is not None and (not isinstance(tls["alpn"], list) or len(tls["alpn"]) > 3 or
+                any(value not in {"h2", "http/1.1", "h3"} for value in tls["alpn"])):
+            raise PilotError("不支持的 ALPN。")
         if tls.get("mode") not in {"import", "acme", "selfsigned"}:
             raise PilotError("非法证书模式。")
         if not tls.get("certificate") or not tls.get("key"):
@@ -113,7 +123,7 @@ def validate(n):
         if tls["mode"] == "acme" and transport == "tcp" and n["port"] == 80:
             raise PilotError("HTTP-01 需要空闲 TCP 80；ACME 节点请使用其他 TCP 端口。")
         if n["protocol"] == "hysteria2":
-            if n.get("obfs") and (n["obfs"].get("type") != "salamander" or len(n["obfs"].get("password", "")) < 16):
+            if n.get("obfs") and (n["obfs"].get("type") != "salamander" or not isinstance(n["obfs"].get("password"), str) or len(n["obfs"].get("password", "")) < (1 if imported else 16)):
                 raise PilotError("仅支持 salamander，混淆密码至少 16 字符。")
             for f in ("up_mbps", "down_mbps"):
                 if f in n and (type(n[f]) is not int or not 1 <= n[f] <= 100000):

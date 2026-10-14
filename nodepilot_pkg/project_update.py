@@ -8,10 +8,11 @@ from urllib.parse import urlsplit
 from .common import PilotError, read_json, run
 from .download import fetch
 from .manager import OWNER
+from .releases import release as official_release, stable_versions, version
 
 
-def online_update(tty_read, tty_write):
-    root = Path("/opt/nodepilot")
+def bound_repository(root=Path("/opt/nodepilot")):
+    root = Path(root)
     if root.is_symlink() or (root / ".owner").read_text() != OWNER:
         raise PilotError("项目安装所有权标记不匹配。")
     record = root / "source.json"
@@ -20,10 +21,25 @@ def online_update(tty_read, tty_write):
     repo = read_json(record)["repository"]
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise PilotError("项目发布源无效。")
+    return repo
+
+
+def project_versions(root=Path("/opt/nodepilot")):
+    # Earlier managers cannot recover adoption journals; avoid unsafe downgrades.
+    return stable_versions(bound_repository(root), (0, 3, 0))
+
+
+def check_update(root=Path("/opt/nodepilot")):
+    return official_release(bound_repository(root))
+
+
+def online_update(tty_read, tty_write, selected="latest"):
+    repo = bound_repository()
+    release = official_release(repo, selected)
+    if version(release["tag_name"]) < (0, 3, 0):
+        raise PilotError("v0.3.0 之前的管理器不能恢复接管记录，拒绝降级。")
     with tempfile.TemporaryDirectory(prefix="nodepilot-update-") as directory:
         tmp = Path(directory)
-        fetch(f"https://api.github.com/repos/{repo}/releases/latest", tmp / "release.json", limit=2 * 1024 * 1024)
-        release = read_json(tmp / "release.json")
         if release.get("draft") or release.get("prerelease") or not re.fullmatch(r"v\d+\.\d+\.\d+", release["tag_name"]):
             raise PilotError("未找到支持的项目稳定版。")
         assets = [a for a in release["assets"] if a["name"] == "install.sh"]

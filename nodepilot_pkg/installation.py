@@ -104,6 +104,8 @@ def uninstall(manager, root=Path("/opt/nodepilot"), launcher=Path("/usr/local/bi
             raise PilotError("证书续期单元不是本项目创建。")
         if path.exists() and run(["systemctl", "show", name, "-p", "DropInPaths", "--value"]):
             raise PilotError("续期单元存在外部 drop-in，拒绝自动卸载。")
+    from .adoption import Adoptions
+    Adoptions(manager).assert_can_uninstall()
     for n in manager.nodes():
         manager.services.assert_owned(n)
         from .caddy import own_target

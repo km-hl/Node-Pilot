@@ -86,15 +86,20 @@ def public_ips():
 
 
 def port_free(listen, port, transport):
-    # Kernel bind is authoritative. No SO_REUSEADDR/PORT, including for UDP.
+    # TCP cores reuse TIME_WAIT addresses. listen() still rejects live listeners.
+    # UDP must not enable reuse: it could hide a live QUIC listener.
     address = ipaddress.ip_address(listen)
     family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
     kind = socket.SOCK_DGRAM if transport == "udp" else socket.SOCK_STREAM
     try:
         with socket.socket(family, kind) as sock:
+            if kind == socket.SOCK_STREAM:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if family == socket.AF_INET6:
                 sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
             sock.bind((listen, port))
+            if kind == socket.SOCK_STREAM:
+                sock.listen(1)
     except OSError as e:
         raise PilotError(f"{listen}:{port}/{transport} 无法绑定：端口占用或地址不可用。") from e
 

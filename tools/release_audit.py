@@ -16,10 +16,10 @@ def git(*args):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--archive", type=Path, default=ROOT / "dist/nodepilot-0.2.0.tar.gz")
+    p.add_argument("--archive", type=Path, default=ROOT / "dist/nodepilot-0.3.0.tar.gz")
     p.add_argument("--installer", type=Path, default=ROOT / "dist/install.sh")
     p.add_argument("--repo", default="km-hl/Node-Pilot")
-    p.add_argument("--tag", default="v0.2.0")
+    p.add_argument("--tag", default="v0.3.0")
     args = p.parse_args()
     names = [x for x in git("ls-tree", "-r", "--name-only", "HEAD").decode().splitlines()
              if x == "nodepilot" or re.fullmatch(r"nodepilot_pkg/[a-z_]+\.py", x)]

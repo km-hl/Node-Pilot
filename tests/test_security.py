@@ -124,6 +124,21 @@ class SecurityTests(unittest.TestCase):
             with self.assertRaises(PilotError):
                 port_free("127.0.0.1", udp.getsockname()[1], "udp")
 
+    @unittest.skipUnless(os.name == "posix", "Linux TCP TIME_WAIT reuse")
+    def test_tcp_time_wait_reusable_without_hiding_active_listener(self):
+        with socket.socket() as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            port = server.getsockname()[1]
+            with self.assertRaises(PilotError):
+                port_free("127.0.0.1", port, "tcp")
+            with socket.create_connection(("127.0.0.1", port)) as client:
+                accepted, _ = server.accept()
+                accepted.close()
+                self.assertEqual(client.recv(1), b"")
+        port_free("127.0.0.1", port, "tcp")
+
 
 if __name__ == "__main__":
     unittest.main()

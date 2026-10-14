@@ -22,7 +22,7 @@ from nodepilot_pkg.cores import Cores
 
 def outbound(node, certificate=None):
     uri = urlsplit(node["uri"])
-    query = {k: v[0] for k, v in parse_qs(uri.query).items()}
+    query = {k: v[0] for k, v in parse_qs(uri.query, keep_blank_values=True).items()}
     if query.get("insecure", "0") != "0":
         raise ValueError("probe requires normal certificate verification")
     result = dict(type="vless" if uri.scheme == "vless" else uri.scheme, tag="proxy",
@@ -42,7 +42,7 @@ def outbound(node, certificate=None):
 
 def xray_client(node, port):
     uri = urlsplit(node["uri"])
-    q = {k: v[0] for k, v in parse_qs(uri.query).items()}
+    q = {k: v[0] for k, v in parse_qs(uri.query, keep_blank_values=True).items()}
     return {"log": {"loglevel": "warning"}, "inbounds": [{"listen": "127.0.0.1", "port": port,
         "protocol": "http", "settings": {}}], "outbounds": [{"protocol": "vless",
         "settings": {"vnext": [{"address": uri.hostname, "port": uri.port,

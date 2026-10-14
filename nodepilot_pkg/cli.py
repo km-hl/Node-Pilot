@@ -33,7 +33,7 @@ def main(argv=None):
         elif args.command == "share":
             print(display(validate(read_json(args.metadata))))
         elif args.command == "self-check":
-            from . import manager, menu, installation, project_update, deploy
+            from . import manager, menu, installation, project_update, deploy, adoption, importer, releases
             print(f"NodePilot {__version__} 管理器导入检查通过。")
         elif args.command == "targets":
             from .targets import rank_targets
@@ -51,6 +51,8 @@ def main(argv=None):
             with manager.locked():
                 manager.recover_core()
                 manager.recover()
+                from .adoption import Adoptions
+                Adoptions(manager).recover()
                 failures = []
                 for n in manager.nodes():
                     if due(n):

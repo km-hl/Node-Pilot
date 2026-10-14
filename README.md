@@ -1,10 +1,10 @@
 # NodePilot
 
-轻量 VPS 节点搭建与管理工具，当前源码 `0.2.0`。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
+轻量 VPS 节点搭建与管理工具，当前源码 `0.3.0`。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
 
 **当前状态：三协议已在 Debian 13 真实 VPS 上通过外网数据传输、HTTPS、生命周期及受限资源短测。** TLS 使用明确标记的测试自签名证书并在客户端导入信任，未关闭验证；ACME 实际签发、完整 256MiB 实机长测及 GUI 客户端矩阵仍待验证。详见 [真实 VPS 测试报告](docs/VPS_TEST_REPORT.md)、[本地记录](docs/VALIDATION.md) 和 [验收清单](docs/VPS_ACCEPTANCE.md)。
 
-仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.2.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.2.0)。新增 Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)。
+仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.3.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.3.0)。Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)，版本选择与接管实测见 [v0.3.0 验证记录](docs/MANAGEMENT_VALIDATION.md)。
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/km-hl/Node-Pilot/main/install.sh)
@@ -42,7 +42,9 @@ nodepilot
 - 独立 `nodepilot-renew.timer` 每天检查本项目 ACME 证书，进入到期前 30 天时续期；复制到新修订后检查、重启，失败保留旧配置。导入证书/测试证书不自动续期，可在菜单 10 更换。
 - HY2 可配置 salamander、认证密码、SNI、UDP 端口和带宽提示。带宽值影响拥塞控制，不能提高实际链路容量，也不等同于硬限速。
 - 只读展示 ss、内存与主机防火墙规则。**不会自动放行端口**；请在主机防火墙和云安全组自行放行准确的 TCP/UDP 端口。规则存在也不能证明公网 UDP 可达。
-- 删除需要 YES 和再次输入节点 ID；卸载需要 YES 和 UNINSTALL。
+- 确认统一使用 y/n，支持 Y/N，错误输入会重新提示；危险操作默认 n，删除、卸载、接管和归还仍需两次确认。
+- 菜单 14 只检查当前/最新稳定版本，不下载安装或重启；菜单 9 可安装/更新指定版本。首次按需安装内核也可选版本。
+- 菜单 13 检查、导入和接管现有独立 Xray/sing-box，也可归还原服务。默认保留原服务，只有预检全部通过且两次确认后才切换，详细范围见下文。
 
 ## 数据、安全与恢复
 
@@ -54,6 +56,7 @@ nodepilot
     revisions/r-<随机修订>/node.json / config.json / certificate.pem / key.pem
     pending.json                 仅在事务中存在
   backups/                       私有、含凭据的 JSON 备份
+  adoptions/a-<随机ID>/           私有原配置、单元、证书备份及持久化切换记录
   acme/n-<随机ID>/                独立 certbot 配置/账户/日志
   caddy/config.json / admin.sock  共享目标配置、私有 Unix 管理套接字
   caddy/storage/                 自建目标的私有证书/ACME 账户
@@ -78,9 +81,23 @@ Caddy 聚合配置另经 `caddy validate` 检查，通过私有 Unix 套接字 r
 
 恢复需要可信备份和**空节点集合**，逐节点配置检查并启动，失败回退已恢复节点。证书恢复为导入模式；不会误认为备份已迁移 ACME 账户或自动续期能力，需要在菜单重新配置 ACME。历史节点修订、备份和旧内核版本暂不自动清理；频繁更新需要注意磁盘空间。
 
+## 接管与归还现有服务
+
+仅接管 systemd 直接运行的独立 Xray/sing-box：单配置文件、1–16 个本阶段协议入站，每个入站一个用户、标准 direct/freedom 出站。复杂路由、其他协议、多用户、多配置目录、内置 ACME/DNS，以及 x-ui 等面板或包装脚本均拒绝自动切换，不会只迁移部分节点后停止整项服务。JSONC 注释/尾逗号可识别。
+
+预检备份原配置、有效单元/drop-in、证书与服务启用/运行状态，复制 PEM 并执行所有入站的官方配置检查。切换保留原认证、监听端口和客户端 SNI，原文件不改写；原有 Reality 目标不重新选站。原日志输出改到独立 journal。为兼容已有客户端，只对导入节点允许保留原短密码或空 shortId，预览会提示更换；新节点仍使用强认证。
+
+确认后停止所选原服务，全部新节点启动正常才停用原服务。操作中断或启动失败时撤回新节点并恢复原启用/运行状态；再次进菜单或续期任务会读取持久化记录恢复。菜单 13 归还时移除该批接管节点，恢复原服务，其他节点保留；归还失败尝试恢复当前 NodePilot 节点及其修改。外部修改原配置/单元/内核后拒绝自动切换或归还，保留备份供人工核对，不覆盖外部改动。原 PEM 合法续期可接受，但当前证书必须通过密钥、域名和有效期检查。
+
+导入证书在 NodePilot 中是独立副本，**不会随原服务外部续期器更新**；应在菜单重新配置 ACME 或定期导入新证书。每个入站拆为一个内核进程，多入站服务接管后内存可能增加，256MiB 主机须评估节点数量。
+
+存在未归还的接管记录时禁止卸载。节点备份同时保存私有接管记录，总大小限 8MiB；恢复菜单只恢复节点，不在新机器自动恢复对外部服务的控制权。原机器 `/etc/nodepilot/adoptions/` 需保留，归还操作以其中的记录为准。备份超限会明确中止，请先核对和归档历史记录。
+
 ## 下载与升级
 
 内核只从官方 GitHub 稳定发布获取。API 必须提供附件 SHA-256，下载采用 HTTPS、超时、重试和大小上限，验证压缩包后仅提取所需内核，再核对 ELF 架构和执行报告版本。不提供校验值或校验失败会中止；不回退到执行未校验文件。
+
+版本输入支持 `latest`、`list` 或完整 `v1.2.3` / `1.2.3`，输入 `0` 取消。列表只展示官方最近 30 条发布中满足最低要求的稳定版本；其他稳定版本可手工输入。最低支持 Xray 25.3.6、sing-box 1.12.0、Caddy 2.7.0，仍需通过当前节点的原生配置检查；旧发布没有官方附件 SHA-256 时拒绝安装。NodePilot 版本选择最低 v0.3.0，以免旧管理器无法恢复接管记录。
 
 可用 `NODEPILOT_MIRROR=https://可信镜像前缀` 更换内核附件传输：官方失败后请求 `前缀/原始HTTPS-URL`，校验值仍来自官方 API。官方元数据不可达时安全中止；不绕过 TLS。SHA-256 + 官方 HTTPS 验证的是发布来源与下载一致性，不声称等价于独立维护者签名。
 
@@ -143,14 +160,14 @@ GitHub Actions 会执行上传范围/秘密指标检查、单元测试、shellch
 发布前先按 [上传隐私检查](CONTRIBUTING.md) 审查源码、提交身份、Git blob 和附件；本仓库示例：
 
 ```bash
-python3 tools/package.py --repo km-hl/Node-Pilot --tag v0.2.0
-python3 tools/release_audit.py --repo km-hl/Node-Pilot --tag v0.2.0
+python3 tools/package.py --repo km-hl/Node-Pilot --tag v0.3.0
+python3 tools/release_audit.py --repo km-hl/Node-Pilot --tag v0.3.0
 ```
 
-打包只生成 `dist/nodepilot-0.2.0.tar.gz`、校验文件和带**固定附件 URL / SHA-256**的 `dist/install.sh`，不自动上传。将审核后的生成安装器同步到源码 `install.sh`，提交后执行 release_audit 对比附件与 Git HEAD。Release 必须包含 `install.sh` 附件才能在线升级。对应版本入口：
+打包只生成 `dist/nodepilot-0.3.0.tar.gz`、校验文件和带**固定附件 URL / SHA-256**的 `dist/install.sh`，不自动上传。将审核后的生成安装器同步到源码 `install.sh`，提交后执行 release_audit 对比附件与 Git HEAD。Release 必须包含 `install.sh` 附件才能在线升级。对应版本入口：
 
 ```bash
-bash <(curl -fsSL https://github.com/km-hl/Node-Pilot/releases/download/v0.2.0/install.sh)
+bash <(curl -fsSL https://github.com/km-hl/Node-Pilot/releases/download/v0.3.0/install.sh)
 ```
 
 修改项目文件后必须重新打包和生成校验值。项目包仅含显式允许的管理器文件，不包含运行时配置、测试内核或凭据。

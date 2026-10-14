@@ -1,6 +1,7 @@
 """Serialized, durable node revisions with native validation and restart rollback."""
 import base64
 import copy
+import json
 import os
 import secrets
 import shutil
@@ -101,7 +102,11 @@ class Manager:
                          for name, p in self.caddy.certificate_files(n).items()}
             nodes.append({"node": n, "files": files})
         path = self.state / "backups" / ("backup-" + secrets.token_hex(8) + ".json")
-        atomic_json(path, {"schema": 1, "nodes": nodes})
+        from .adoption import Adoptions
+        bundle = {"schema": 1, "nodes": nodes, "adoptions": Adoptions(self).records()}
+        if len(json.dumps(bundle, ensure_ascii=False).encode()) > 8 * 1024 * 1024:
+            raise PilotError("节点/接管备份超过 8MiB；请先另存接管记录目录并清理已取消/归还记录。")
+        atomic_json(path, bundle)
         return path
 
     def apply(self, node, probe=True, renew=False):
@@ -127,7 +132,7 @@ class Manager:
             networks = cloudflare_networks()
             for sni in n["reality"]["server_names"]:
                 inspect_target(n["reality"]["target"], sni, networks)
-                probe_reality(n["reality"]["target"], sni)
+                probe_reality(n["reality"]["target"], sni, proxy=bool(n["reality"].get("xver")))
         if old:
             self.services.assert_owned(old)
             self.backup()
@@ -240,12 +245,12 @@ class Manager:
                     self.caddy.sync(self.nodes())
                 shutil.rmtree(path)
 
-    def update_core(self, core):
+    def update_core(self, core, selected="latest"):
         affected = [n for n in self.nodes() if n["core"] == core or (core == "caddy" and own_target(n))]
         for n in affected:
             self.services.assert_owned(n)
         self.backup()
-        destination = self.cores.stage(core)
+        destination = self.cores.stage(core) if selected == "latest" else self.cores.stage(core, selected)
         if core == "caddy" and affected:
             self.caddy.check(self.nodes(), destination / core)
         else:
