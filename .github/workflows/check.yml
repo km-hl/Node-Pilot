@@ -1,0 +1,24 @@
+name: NodePilot checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  linux-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Public source privacy and scope audit
+        run: python3 tools/privacy_audit.py
+      - name: Unit and transaction tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Bash syntax and shellcheck
+        run: |
+          bash -n install.sh
+          shellcheck install.sh
+      - name: Official verified core checks
+        run: python3 tools/native_check.py --download
+      - name: Reproducible packaging
+        run: |
+          python3 tools/package.py --archive /tmp/nodepilot-a.tar.gz
+          python3 tools/package.py --archive /tmp/nodepilot-b.tar.gz
+          cmp /tmp/nodepilot-a.tar.gz /tmp/nodepilot-b.tar.gz
