@@ -15,10 +15,11 @@ class AcmeContactTests(unittest.TestCase):
         for contact in ("", "contact@example.com"):
             n = fixture("anytls")
             n["tls"].update(mode="acme", domain=n["sni"], email=contact)
-            with patch("nodepilot_pkg.certificates.dns_matches"), patch("nodepilot_pkg.certificates.public_ips"), \
+            with patch("nodepilot_pkg.certificates.dns_matches", return_value={"8.8.8.8"}), patch("nodepilot_pkg.certificates.public_ips"), \
                  patch("nodepilot_pkg.certificates.port_free"), patch("nodepilot_pkg.certificates.shutil.which", return_value="certbot"), \
                  patch("nodepilot_pkg.common.private_dir"), patch("nodepilot_pkg.certificates.run") as command:
-                acme(n)
+                with patch('nodepilot_pkg.certificates.atomic_bytes'):
+                    acme(n)
             args = command.call_args.args[0]
             self.assertIn("--agree-tos", args)
             if contact:

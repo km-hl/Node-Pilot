@@ -149,6 +149,17 @@ def dns_matches(domain, ips):
     expected = {ip for ip in ips.values() if ip}
     if not answers or not expected or not answers.issubset(expected):
         raise PilotError("域名全部 A/AAAA 必须指向已探测的本机公网 IP；请检查代理/CDN、旧 AAAA 和 DNS 传播。")
+    if any(not ipaddress.ip_address(ip).is_global for ip in answers):
+        raise PilotError("HTTP-01 域名必须解析到公网 IP。")
+    return answers
+
+
+def http01_bindings(answers):
+    """Check only families actually published by this domain; no global changes."""
+    versions = {ipaddress.ip_address(ip).version for ip in answers}
+    if not versions:
+        raise PilotError("HTTP-01 没有可验证的 DNS 地址。")
+    return [address for version, address in ((4, "0.0.0.0"), (6, "::")) if version in versions]
 
 
 def diagnostics(n=None):

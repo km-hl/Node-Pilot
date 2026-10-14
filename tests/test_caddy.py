@@ -84,7 +84,7 @@ class FakeCaddy:
     def preflight(self, n, old, others):
         pass
 
-    def prepare(self, n, revision):
+    def prepare(self, n, revision, renew=False):
         for name in ("certificate.pem", "key.pem"):
             (revision / name).write_text("private fixture")
         n["caddy"].update(certificate=str(revision / "certificate.pem"), key=str(revision / "key.pem"))

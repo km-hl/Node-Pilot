@@ -58,8 +58,10 @@ def main():
         n["caddy"] = dict(domain=n["sni"], port=18003, certificate_mode="import", upstream="",
                           certificate=holder["tls"]["certificate"], key=holder["tls"]["key"])
         from nodepilot_pkg.common import run
-        for mode in ("import", "acme"):
+        for mode in ("import", "acme", "dns01", "selfsigned"):
             n["caddy"]["certificate_mode"] = mode
+            if mode=='dns01':
+                n['caddy']['dns']={'zone_id':'0'*32,'credential_id':'cf-'+'0'*16,'propagation_seconds':60}
             config = base / ("caddy-" + mode + ".json")
             atomic_json(config, configuration([n], base))
             run([cores.binary("caddy"), "validate", "--config", config])

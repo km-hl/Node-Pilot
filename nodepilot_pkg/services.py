@@ -1,5 +1,7 @@
 """Only exact project-owned units may be changed or stopped."""
 import time
+import ipaddress
+import os
 from pathlib import Path
 
 from .common import PilotError, atomic_bytes, run
@@ -58,15 +60,42 @@ class Services:
         except PilotError:
             return False
 
+    def runtime(self, n):
+        self.assert_owned(n)
+        keys = ('ActiveState','SubState','Result','MainPID','ExecMainStatus','NRestarts')
+        args = ['systemctl','show',n['service'],'--no-pager']
+        for key in keys:
+            args += ['-p',key]
+        fields = dict(line.split('=',1) for line in run(args).splitlines() if '=' in line)
+        for key in ('MainPID','ExecMainStatus','NRestarts'):
+            try:
+                fields[key] = int(fields.get(key,0))
+            except ValueError:
+                raise PilotError('systemd 状态字段无效。')
+        fields['listening'] = listening(n,fields['MainPID']) if fields['MainPID'] > 1 else False
+        if fields.get('ActiveState') != 'active' or fields.get('Result') not in {'success',''} or fields['ExecMainStatus']:
+            fields['state'] = '服务启动失败/未运行'
+        elif fields['NRestarts']:
+            fields['state'] = '服务发生异常重启'
+        elif not fields['listening']:
+            fields['state'] = '服务运行但未监听配置端口'
+        else:
+            fields['state'] = '服务运行，监听正常；公网未验证'
+        fields['healthy'] = fields['state'].startswith('服务运行，监听正常')
+        return fields
+
     def restart(self, n):
         self.assert_owned(n)
         run(["systemctl", "reset-failed", n["service"]])
         run(["systemctl", "restart", n["service"]])
         # Do not mistake immediate 'active' before the core exits for a healthy restart.
-        for _ in range(4):
+        pid = None
+        for _ in range(8):
             time.sleep(0.5)
-            if not self.active(n):
-                raise PilotError(f"{n['service']} 启动后退出；检查本机 journalctl。")
+            state = self.runtime(n)
+            if not state['healthy'] or (pid is not None and pid != state['MainPID']):
+                raise PilotError(f"{n['service']}：{state['state']}；ActiveState={state.get('ActiveState')} Result={state.get('Result')} exit={state['ExecMainStatus']} restarts={state['NRestarts']}；检查本机 journalctl。")
+            pid = state['MainPID']
 
     def remove(self, n):
         path = self.assert_owned(n)
@@ -77,3 +106,33 @@ class Services:
     def logs(self, n):
         self.assert_owned(n)
         return run(["journalctl", "-u", n["service"], "-n", "60", "--no-pager"], timeout=15)
+
+
+def listening(n, pid, proc=Path('/proc')):
+    """Require the configured socket to belong to this service's main process."""
+    try:
+        sockets = set()
+        for descriptor in (proc/str(pid)/'fd').iterdir():
+            try:
+                target = os.readlink(descriptor)
+                if target.startswith('socket:['):
+                    sockets.add(target[8:-1])
+            except OSError:
+                continue
+        for suffix in ('','6'):
+            path = proc/'net'/(n['transport']+suffix)
+            if not path.exists():
+                continue
+            for line in path.read_text().splitlines()[1:]:
+                fields = line.split()
+                address, port = fields[1].split(':')
+                if fields[9] not in sockets or int(port,16) != n['port'] or fields[3] != ('0A' if n['transport']=='tcp' else '07'):
+                    continue
+                raw = bytes.fromhex(address)
+                raw = raw[::-1] if len(raw)==4 else b''.join(raw[i:i+4][::-1] for i in range(0,16,4))
+                actual, wanted = ipaddress.ip_address(raw), ipaddress.ip_address(n['listen'])
+                if actual == wanted or actual.is_unspecified or (actual.version==6 and actual.ipv4_mapped==wanted):
+                    return True
+    except (OSError, ValueError, IndexError):
+        return False
+    return False

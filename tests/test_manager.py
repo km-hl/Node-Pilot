@@ -96,6 +96,17 @@ class ManagerTests(unittest.TestCase):
         self.assertFalse(self.manager.nodes())
         self.assertFalse(list(self.services.units.iterdir()))
 
+    def test_existing_target_and_sni_not_rescreened_when_only_port_changes(self):
+        old=self.create()
+        old['reality']['target']='www.apple.com:443'
+        old['sni']='www.apple.com';old['reality']['server_names']=[old['sni']]
+        self.manager.apply(old,probe=False)
+        changed=copy.deepcopy(old);changed['port']=8443
+        with patch('nodepilot_pkg.targets.inspect_target') as scan, patch('nodepilot_pkg.targets.cloudflare_networks') as ranges:
+            self.manager.apply(changed)
+        scan.assert_not_called();ranges.assert_not_called()
+        self.assertEqual(self.manager.get(old['id'])['sni'],'www.apple.com')
+
     def test_foreign_unit_is_untouched(self):
         n = fixture()
         p = self.services.units / n["service"]

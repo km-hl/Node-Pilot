@@ -61,11 +61,21 @@ class Menu:
         if not nodes:
             self.say("尚无节点。")
         for n in nodes:
-            state = "运行中" if self.manager.services.active(n) else "未运行"
+            state = self.manager.services.runtime(n)['state']
             from .caddy import own_target
             if own_target(n) and not self.manager.caddy.active():
                 state = "Caddy 目标未运行"
             self.say(f"{n['id']}  {n['name']}\n  {n['protocol']} {n['listen']}:{n['port']}/{n['transport']}  {state}")
+            self.say(f"  SNI：{n['sni']}" + (f"  target：{n['reality']['target']}" if n['protocol']=='reality' else ''))
+            from .certificates import information
+            try:
+                info = information(n,self.manager.state,self.manager.caddy.certificate_files(n) if n['protocol']=='reality' else None)
+                if info:
+                    self.say(f"  证书：{info['status']}，剩余 {info['days']} 天；自动续期运行：{'是' if info['automatic_enabled'] else '否'}；最近：{info['last_renewal']['status']}")
+            except PilotError:
+                self.say('  证书状态暂不可读取。')
+            from .connectivity import latest
+            self.say('  最近联通：'+latest(self.manager,n)['status'])
 
     def ensure_core(self, core):
         try:
@@ -92,7 +102,7 @@ class Menu:
             if selected.lower() == "latest":
                 return "latest"
             from .releases import MINIMUM, version
-            if version(selected) < (MINIMUM[core] if core != "nodepilot" else (0, 3, 0)):
+            if version(selected) < (MINIMUM[core] if core != "nodepilot" else (0, 4, 0)):
                 self.say("版本低于当前功能支持范围，请选择较新版本。")
                 continue
             return selected
@@ -173,27 +183,41 @@ class Menu:
             controller.execute(record["id"], confirmed=True)
         self.say("已接管，节点可在菜单 4–8 管理；菜单 13 可归还原服务。尚需真实客户端验证。")
 
-    def tls_input(self, n, old=None):
-        if old and not self.confirm("是否更换证书来源/重新生成测试证书"):
+    def tls_input(self, n, old=None, choice=None):
+        if old and n['sni']==old['sni'] and not self.confirm("是否更换证书来源/重新生成测试证书"):
             n["tls"] = copy.deepcopy(old["tls"])
             return False
-        self.say("证书方式：1 导入现有 PEM（含完整链）  2 Let's Encrypt HTTP-01  3 测试自签名")
-        choice = self.ask("选择", "1")
-        if choice == "1":
+        if choice is None:
+            self.say("证书方式：1 HTTP-01（公网 TCP 80）  2 Cloudflare DNS-01（无需 TCP 80）  3 导入 PEM  4 测试自签名")
+            choice = self.ask("选择", "1")
+        if choice == "3":
             n["tls"] = {"mode": "import", "certificate": self.ask("证书绝对路径"), "key": self.ask("无口令私钥绝对路径")}
-        elif choice == "2":
-            self.say("域名所有 A/AAAA 必须直指本机公网 IP。HTTP-01 需要公网 TCP 80，云安全组/防火墙需手动放行；不会停止已有 Web 服务。")
+        elif choice in {'1','2'}:
+            self.say('HTTP-01 要求全部 A/AAAA 指向本机且 TCP 80 可达。' if choice=='1' else 'DNS-01 只验证域名控制权，不要求 A/AAAA 指向本机；客户端分享地址仍须能访问 VPS。')
             contact = email(self.ask("ACME 联系邮箱（可留空）"))
-            if not self.confirm("确认 DNS、HTTP-01、TCP 80 可达，并同意 Let's Encrypt 服务条款"):
+            if not self.confirm("确认满足所选挑战条件，并同意 Let's Encrypt 服务条款"):
                 raise PilotError("已取消证书申请。")
-            if not shutil.which("certbot"):
+            dns = choice=='2'
+            plugin_missing = dns and (not shutil.which('certbot') or 'dns-cloudflare' not in run(['certbot','plugins']))
+            if not shutil.which("certbot") or plugin_missing:
                 if not self.confirm("通过系统签名软件源安装 certbot 依赖"):
                     raise PilotError("已取消 certbot 安装。")
                 run(["apt-get", "update"], timeout=240)
-                run(["apt-get", "install", "-y", "--no-install-recommends", "certbot"], timeout=300)
+                run(["apt-get", "install", "-y", "--no-install-recommends", "certbot", *(['python3-certbot-dns-cloudflare'] if dns else [])], timeout=300)
             n["tls"] = {"mode": "acme", "domain": n["sni"], "email": contact,
                         "certificate": "/nonexistent/nodepilot-cert", "key": "/nonexistent/nodepilot-key"}
-        elif choice == "3":
+            if dns:
+                from .dns_credentials import store_token, validate_settings
+                self.say('Token 仅授予所需 Zone 的 DNS:Edit / Zone:Read；不使用 Global API Key。凭据存储于 root 私有文件，不进入节点链接。')
+                zone = self.ask('Cloudflare Zone ID')
+                seconds = int(self.ask('DNS 传播等待秒数（10–600）','60'))
+                import getpass
+                token = getpass.getpass('Cloudflare API Token（隐藏输入）：',stream=self.tty)
+                settings = {'zone_id':zone,'propagation_seconds':seconds,'credential_id':store_token(self.manager.state,token)}
+                del token
+                validate_settings(settings)
+                n['tls'].update(challenge='dns-cloudflare',dns=settings)
+        elif choice == "4":
             if not self.confirm("自签名仅供测试；客户端必须手动信任 certificate.pem，分享链接保持证书验证"):
                 raise PilotError("已取消测试证书。")
             n["tls"] = {"mode": "selfsigned", "certificate": "/nonexistent/nodepilot-cert", "key": "/nonexistent/nodepilot-key"}
@@ -238,7 +262,7 @@ class Menu:
             source = self.ask("网页来源 HTTPS 域名（留空或 - 使用本机欢迎页，节省资源）", c.get("upstream", "").removesuffix(":443"))
             c["upstream"] = "" if source in {"", "-"} else host(source, public=True) + ":443"
             if not previous or domain != previous["sni"] or self.confirm("更换 Caddy 证书来源"):
-                choice = self.ask("Caddy 证书：1 自动申请/续期（默认）  2 导入现有 PEM", "1")
+                choice = self.ask("Caddy 证书：1 Caddy HTTP-01（默认）  2 Cloudflare DNS-01  3 导入 PEM  4 测试自签名", "1")
                 if choice == "1":
                     self.say("域名全部 A/AAAA 必须直指 VPS；HTTP-01 需公网 TCP 80。不停止已有网站服务，443 由 Xray 使用。")
                     c["email"] = email(self.ask("ACME 邮箱（可留空）"))
@@ -247,16 +271,23 @@ class Menu:
                     c["certificate_mode"] = "acme"
                     c.pop("certificate", None)
                     c.pop("key", None)
-                elif choice == "2":
-                    c.update(certificate_mode="import", certificate=self.ask("证书完整链 PEM 绝对路径"),
-                             key=self.ask("无口令私钥 PEM 绝对路径"))
+                elif choice in {'2','3','4'}:
+                    holder = {'id':n['id'],'sni':domain,'tls':{}}
+                    self.tls_input(holder,choice=choice)
+                    t = holder['tls']
+                    c.update(certificate_mode='dns01' if t['mode']=='acme' and t.get('challenge')=='dns-cloudflare' else t['mode'],
+                             certificate=t['certificate'],key=t['key'],email=t.get('email',''))
+                    if c['certificate_mode']=='acme':
+                        raise PilotError('独立 PEM 流程请使用 DNS-01、导入或测试证书；HTTP-01 使用 Caddy 选项 1。')
+                    if t.get('dns'):
+                        c['dns']=t['dns']
                 else:
                     raise PilotError("无效 Caddy 证书方式。")
             n["caddy"] = c
             r.update(mode="self", target=f"127.0.0.1:{c['port']}", server_names=[domain])
         else:
             n.pop("caddy", None)
-            self.say("无域名：从本 VPS 测量 TCP+TLS 握手时延，排除 Cloudflare CDN、跳转、无有效证书/TLS 1.3/h2 的站点。")
+            self.say("无域名：从本 VPS 检测 TLS1.3/h2/X25519/可信证书并排除 CF；网页跳转仅为质量提示。")
             candidates = self.ask("候选域名（逗号分隔；留空使用内置；keep 保留原目标；manual 自定义 target/SNI）", "")
             if candidates == "keep" and old and not own_target(old):
                 n["sni"] = old["sni"]
@@ -264,7 +295,7 @@ class Menu:
                 sni = host(self.ask("第三方客户端 SNI"), public=True)
                 target = self.ask("第三方 Reality 目标 host:port", sni + ":443")
                 selected = inspect_target(target, sni, cloudflare_networks())
-                self.say(f"已通过非 CF/TLS/网页检查，当前 TCP+TLS 中位时延 {selected['median_ms']} ms。")
+                self.say(f"已通过非 CF/TLS1.3/h2/X25519/证书检查，中位时延 {selected['median_ms']} ms；{selected.get('warnings',[])}")
                 n["sni"] = sni
                 r.update(target=target, server_names=[sni], selection=selected)
                 r["xver"] = 0
@@ -273,7 +304,7 @@ class Menu:
                 if not ranked:
                     raise PilotError("没有合格的非 CF 目标；请重新提供候选域名。不会自动选择未通过检查的 SNI。")
                 for index, result in enumerate(ranked, 1):
-                    self.say(f"{index}. {result['sni']}  {result['median_ms']} ms")
+                    self.say(f"{index}. {result['sni']}  TLS1.3/h2/X25519  {result['median_ms']} ms，波动 {result['spread_ms']} ms；{result.get('warnings',[])}")
                 index = int(self.ask("选择目标（默认当前测量时延最低）", "1"))
                 if not 1 <= index <= len(ranked):
                     raise PilotError("目标序号无效。")
@@ -331,6 +362,22 @@ class Menu:
     def edit(self, old=None):
         old = old or self.select()
         n, renew = self.node_input(old["protocol"], old)
+        summary = []
+        for field in ('name','listen','port','server','sni'):
+            if old[field] != n[field]:
+                summary.append(f"{field}：{old[field]} -> {n[field]}")
+        if old['protocol']=='reality':
+            for field in ('target','server_names','uuid','short_id','fingerprint','private_key','public_key'):
+                if old['reality'].get(field) != n['reality'].get(field):
+                    summary.append(f"Reality {field} 已变化（密钥/认证不在摘要显示）")
+        elif old.get('password') != n.get('password') or old.get('obfs') != n.get('obfs'):
+            summary.append('密码或混淆认证已变化（不显示凭据）')
+        if old.get('tls') != n.get('tls') or old.get('caddy') != n.get('caddy'):
+            summary.append('证书/自建目标设置已变化')
+        self.say('变更摘要：\n'+ ('\n'.join(summary) or '无参数变化'))
+        if not self.confirm('应用以上变更？SNI、端口、UUID、密码或密钥变化可能使旧分享链接失效'):
+            self.say('已取消修改。')
+            return
         with self.manager.locked():
             # Prevent overwriting a newer revision after time spent in interactive prompts.
             if self.manager.get(old["id"]) != old:
@@ -350,8 +397,8 @@ class Menu:
 
     def status(self):
         n = self.select()
-        self.say("服务状态：" + ("运行中" if self.manager.services.active(n) else "未运行"))
-        action = self.ask("1 查看日志（可能含凭据）  2 重启此节点  3 NodePilot Caddy 日志  0 返回", "0")
+        self.say('服务状态：'+self.manager.services.runtime(n)['state'])
+        action = self.ask("1 查看日志  2 重启此节点  3 Caddy 日志  4 本机 Reality HTTPS 测试  0 返回", "0")
         if action == "1":
             self.say(self.manager.services.logs(n))
         elif action == "2":
@@ -361,6 +408,10 @@ class Menu:
         elif action == "3":
             self.manager.caddy.assert_owned()
             self.say(run(["journalctl", "-u", "nodepilot-caddy.service", "-n", "60", "--no-pager"]))
+        elif action == '4':
+            from .connectivity import check
+            with self.manager.locked():
+                self.say(check(self.manager,n)['status'])
 
     def update(self):
         self.say("1 安装/更新 Xray  2 安装/更新 sing-box  3 更新 NodePilot  4 安装/更新 Caddy\n5 检查全部版本更新  0 返回")
@@ -387,7 +438,7 @@ class Menu:
             self.say(f"已安装并验证：{destination.name}")
 
     def backup_restore(self):
-        choice = self.ask("1 备份  2 恢复到空节点目录  3 更新/续期证书")
+        choice = self.ask("1 备份  2 恢复空目录  3 更换证书  4 证书详情  5 强制续期  6 导出 Mihomo YAML")
         if choice == "1":
             with self.manager.locked():
                 self.say(f"私有备份（含密码和私钥）：{self.manager.backup()}")
@@ -409,6 +460,27 @@ class Menu:
             with self.manager.locked():
                 self.manager.apply(n, renew=renew)
             self.say("证书配置已更新。")
+        elif choice == '4':
+            from .certificates import information
+            n=self.select()
+            self.say(information(n,self.manager.state,self.manager.caddy.certificate_files(n) if n['protocol']=='reality' else None))
+        elif choice == '5':
+            n=self.select()
+            if (n['protocol']=='reality' and n.get('caddy',{}).get('certificate_mode')!='dns01') or (n['protocol']!='reality' and n['tls']['mode']!='acme'):
+                raise PilotError('强制续期适用于 certbot ACME；Caddy HTTP-01 由 Caddy 自动管理，导入证书请更换。')
+            if self.confirm('强制续期可能触发 CA 频率限制；失败保留原节点'):
+                with self.manager.locked():
+                    self.manager.apply(n,probe=False,renew=True)
+                self.say('证书已续期并安全切换。')
+        elif choice == '6':
+            from .exporters import mihomo_yaml
+            from .common import atomic_bytes
+            if self.confirm('导出文件含所有节点认证凭据；请只保存到可信私有路径'):
+                destination=Path(self.ask('本机导出绝对路径'))
+                if not destination.is_absolute() or destination.is_symlink() or destination.exists():
+                    raise PilotError('请输入尚不存在的绝对文件路径。')
+                atomic_bytes(destination,mihomo_yaml(self.manager.nodes()).encode())
+                self.say(f'已导出私有 YAML：{destination}；实际客户端联通仍需验证。')
         else:
             raise PilotError("无效选项。")
 
@@ -426,6 +498,10 @@ class Menu:
 
     def start(self):
         with self.manager.locked():
+            from .installation import recover_uninstall
+            if recover_uninstall(self.manager):
+                self.say("已完成中断的卸载；私有备份保留。")
+                return 0
             self.manager.recover_core()
             self.manager.recover()
             from .adoption import Adoptions

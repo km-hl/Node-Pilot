@@ -26,7 +26,7 @@ def bound_repository(root=Path("/opt/nodepilot")):
 
 def project_versions(root=Path("/opt/nodepilot")):
     # Earlier managers cannot recover adoption journals; avoid unsafe downgrades.
-    return stable_versions(bound_repository(root), (0, 3, 0))
+    return stable_versions(bound_repository(root), (0, 4, 0))
 
 
 def check_update(root=Path("/opt/nodepilot")):
@@ -36,8 +36,8 @@ def check_update(root=Path("/opt/nodepilot")):
 def online_update(tty_read, tty_write, selected="latest"):
     repo = bound_repository()
     release = official_release(repo, selected)
-    if version(release["tag_name"]) < (0, 3, 0):
-        raise PilotError("v0.3.0 之前的管理器不能恢复接管记录，拒绝降级。")
+    if version(release["tag_name"]) < (0, 4, 0):
+        raise PilotError("v0.4.0 之前的管理器不能处理 DNS-01 和卸载事务，拒绝降级。")
     with tempfile.TemporaryDirectory(prefix="nodepilot-update-") as directory:
         tmp = Path(directory)
         if release.get("draft") or release.get("prerelease") or not re.fullmatch(r"v\d+\.\d+\.\d+", release["tag_name"]):

@@ -95,13 +95,18 @@ def validate(n):
                 raise PilotError("自建 Reality 的域名、SNI 和唯一 serverNames 必须一致。")
             if type(c.get("port")) is not int or not 1024 <= c["port"] <= 65535 or c["port"] == n["port"]:
                 raise PilotError("Caddy 本机端口须为 1024–65535，且不同于节点端口。")
-            if r["target"] != f"127.0.0.1:{c['port']}" or n["port"] == 80:
+            if r["target"] != f"127.0.0.1:{c['port']}" or (n["port"] == 80 and c.get('certificate_mode') == 'acme'):
                 raise PilotError("自建 Reality 必须指向本机 Caddy；TCP 80 保留给 HTTP-01。")
-            if c.get("certificate_mode") not in {"acme", "import"}:
+            if c.get("certificate_mode") not in {"acme", "dns01", "import", "selfsigned"}:
                 raise PilotError("Caddy 证书只支持自动 ACME 或导入。")
             email(c.get("email", ""))
-            if c["certificate_mode"] == "import" and (not c.get("certificate") or not c.get("key")):
+            if c["certificate_mode"] != "acme" and (not c.get("certificate") or not c.get("key")):
                 raise PilotError("导入 Caddy 证书需要证书和私钥路径。")
+            if c['certificate_mode'] == 'dns01':
+                from .dns_credentials import validate_settings
+                validate_settings(c.get('dns',{}))
+            if c.get('http01_listen') and (not isinstance(c['http01_listen'],list) or any(v not in {':80','0.0.0.0:80','[::]:80'} for v in c['http01_listen'])):
+                raise PilotError('非法 HTTP-01 监听地址。')
             if c.get("upstream"):
                 h, p = split_target(c["upstream"])
                 host(h, public=True)
@@ -120,7 +125,13 @@ def validate(n):
             raise PilotError("非法证书模式。")
         if not tls.get("certificate") or not tls.get("key"):
             raise PilotError("缺少 TLS 证书或私钥路径。")
-        if tls["mode"] == "acme" and transport == "tcp" and n["port"] == 80:
+        if tls['mode'] == 'acme':
+            if tls.get('domain',n['sni']) != n['sni'] or tls.get('challenge','http-01') not in {'http-01','dns-cloudflare'}:
+                raise PilotError('ACME 域名/SNI 或挑战方式不一致。')
+            if tls.get('challenge') == 'dns-cloudflare':
+                from .dns_credentials import validate_settings
+                validate_settings(tls.get('dns',{}))
+        if tls["mode"] == "acme" and tls.get('challenge','http-01') == 'http-01' and transport == "tcp" and n["port"] == 80:
             raise PilotError("HTTP-01 需要空闲 TCP 80；ACME 节点请使用其他 TCP 端口。")
         if n["protocol"] == "hysteria2":
             if n.get("obfs") and (n["obfs"].get("type") != "salamander" or not isinstance(n["obfs"].get("password"), str) or len(n["obfs"].get("password", "")) < (1 if imported else 16)):

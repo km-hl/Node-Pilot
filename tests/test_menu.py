@@ -41,7 +41,7 @@ class RealityMenuTests(unittest.TestCase):
     def test_no_domain_uses_current_best_rank_and_does_not_install_caddy(self):
         menu = self.menu("")
         n = new_node("reality", "node", "8.8.8.8")
-        best = {"sni": "fast.example.com", "target": "fast.example.com:443", "median_ms": 10}
+        best = {"sni": "fast.example.com", "target": "fast.example.com:443", "median_ms": 10, "spread_ms": 1}
         with patch("nodepilot_pkg.targets.rank_targets", return_value=[best]):
             menu.reality_input(n, None)
         validate(n)

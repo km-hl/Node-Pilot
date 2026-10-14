@@ -25,11 +25,16 @@ def main():
     p.add_argument("--state-dir", type=Path, default=Path("/etc/nodepilot"))
     p.add_argument("--cores-root", type=Path, default=Path("/opt/nodepilot/cores"))
     p.add_argument("--with-caddy", action="store_true", help="同时计量临时测试的共享 Caddy 进程")
+    p.add_argument('--protocol',choices=('reality','anytls','hysteria2'),help='只测一个协议；未指定时测三协议')
+    p.add_argument('--lifecycle',action='store_true',help='额外执行已校验内核配置检查、节点重启和测试证书生成')
+    p.add_argument('--update-core',choices=('sing-box','xray'),help='在受限组内下载/校验指定核心当前稳定版本候选；只用于隔离状态')
     args = p.parse_args()
     root_required()
     if not 10 <= args.duration <= 300:
         p.error("duration must be 10..300 seconds")
     record = read_json(args.private_dir / "test-nodes.json")
+    if args.protocol:
+        record['nodes']=[n for n in record['nodes'] if n['protocol']==args.protocol]
     # Parent controller must stop only its recorded test services first.
     cores = Cores(args.cores_root)
     children, handles = [], []
@@ -87,6 +92,31 @@ def main():
         stats.update(memory_max_bytes=(cgroup / "memory.max").read_text().strip(),
                      swap_max_bytes=(cgroup / "memory.swap.max").read_text().strip(),
                      cpu_max=(cgroup / "cpu.max").read_text().strip(), ready=True)
+        if args.lifecycle:
+            from nodepilot_pkg.certificates import prepare
+            from nodepilot_pkg.common import private_dir
+            for n in record['nodes']:
+                cores.check(n,args.state_dir/'nodes'/n['id']/'current/config.json')
+            for i,n in enumerate(record['nodes']):
+                children[i].terminate();children[i].wait(timeout=10)
+                config=args.state_dir/'nodes'/n['id']/'current/config.json'
+                children[i]=subprocess.Popen([str(binaries[n['core']]),'run','-config' if n['core']=='xray' else '-c',str(config)],stdout=handles[i],stderr=handles[i],env=environment)
+            with tempfile.TemporaryDirectory(prefix='certificate-work-',dir=args.private_dir) as certdir:
+                prepare({'sni':'resource.example.com','tls':{'mode':'selfsigned','certificate':'/nonexistent','key':'/nonexistent'}},Path(certdir))
+            stats['lifecycle']='native checks, three/single core restart, OpenSSL certificate generation passed'
+        if args.update_core:
+            if args.state_dir.resolve().parent!=Path('/var/lib') or not args.state_dir.name.startswith('nodepilot-stability-test-') or cores.root.resolve()!=args.state_dir/'cores':
+                raise RuntimeError('candidate update restricted to disposable stability state')
+            version=read_json(cores.binary(args.update_core).parent/'verified.json')['version']
+            candidate=cores.stage(args.update_core,'v'+version)
+            for n in record['nodes']:
+                if n['core']==args.update_core:cores.check(n,args.state_dir/'nodes'/n['id']/'current/config.json',candidate/args.update_core)
+            for i,n in enumerate(record['nodes']):
+                if n['core']==args.update_core:
+                    children[i].terminate();children[i].wait(timeout=10)
+                    config=args.state_dir/'nodes'/n['id']/'current/config.json'
+                    children[i]=subprocess.Popen([str(candidate/args.update_core),'run','-config' if n['core']=='xray' else '-c',str(config)],stdout=handles[i],stderr=handles[i],env=environment)
+            stats['candidate_update']='official SHA/ELF/version + all affected checks + replacement startup'
         end = time.monotonic() + args.duration
         while time.monotonic() < end:
             if any(child.poll() is not None for child in children):
@@ -108,6 +138,8 @@ def main():
         stats["failed"] = True
         raise
     finally:
+        peak=cgroup/'memory.peak'
+        if peak.exists():stats['kernel_memory_peak_bytes']=int(peak.read_text())
         for child in children:
             if child.poll() is None:
                 child.terminate()

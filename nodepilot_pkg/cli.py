@@ -33,7 +33,7 @@ def main(argv=None):
         elif args.command == "share":
             print(display(validate(read_json(args.metadata))))
         elif args.command == "self-check":
-            from . import manager, menu, installation, project_update, deploy, adoption, importer, releases
+            from . import manager, menu, installation, project_update, deploy, adoption, importer, releases, dns_credentials, connectivity, exporters
             print(f"NodePilot {__version__} 管理器导入检查通过。")
         elif args.command == "targets":
             from .targets import rank_targets
@@ -49,6 +49,9 @@ def main(argv=None):
             supported()
             manager = Manager()
             with manager.locked():
+                from .installation import recover_uninstall
+                if recover_uninstall(manager):
+                    return 0
                 manager.recover_core()
                 manager.recover()
                 from .adoption import Adoptions

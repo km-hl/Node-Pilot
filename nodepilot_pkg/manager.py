@@ -127,7 +127,9 @@ class Manager:
         managed = own_target(n) or (old and own_target(old))
         if managed:
             self.caddy.preflight(n, old, self.nodes())
-        if probe and n["protocol"] == "reality" and not own_target(n):
+        target_changed = not old or own_target(old) or (n["protocol"] == "reality" and any(
+            n["reality"].get(k) != old["reality"].get(k) for k in ("target", "server_names", "xver")))
+        if probe and n["protocol"] == "reality" and not own_target(n) and target_changed:
             from .targets import inspect_target, cloudflare_networks
             networks = cloudflare_networks()
             for sni in n["reality"]["server_names"]:
@@ -146,9 +148,9 @@ class Manager:
         atomic_json(pending, {"kind": "node", "old": str(old_revision) if old else None, "node": n})
         try:
             if n["protocol"] != "reality":
-                certificates.prepare(n, revision, renew)
+                certificates.prepare(n, revision, renew, self.state)
             elif own_target(n):
-                self.caddy.prepare(n, revision)
+                self.caddy.prepare(n, revision, renew)
             atomic_json(revision / "node.json", n)
             atomic_json(revision / "config.json", generate(n))
             self.cores.check(n, revision / "config.json")
@@ -182,6 +184,8 @@ class Manager:
             raise PilotError(f"操作失败，已回滚：{error}") from error
         pending.unlink()
         fsync_dir(path)
+        if (n['protocol'] != 'reality' and n['tls']['mode'] == 'acme') or (own_target(n) and n['caddy']['certificate_mode']=='dns01'):
+            certificates.event(self.state, n, '有效证书已安全安装；服务/监听通过，公网未验证')
         return n
 
     def delete(self, node_id):

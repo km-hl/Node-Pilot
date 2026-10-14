@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .common import PilotError, atomic_bytes, atomic_json, private_dir, run
 from .model import validate
-from .system import dns_matches, port_free, probe_reality, public_ips
+from .system import dns_matches, http01_bindings, port_free, probe_reality, public_ips
 
 UNIT = "nodepilot-caddy.service"
 
@@ -50,7 +50,12 @@ def configuration(nodes, state):
             loads.append({"certificate": c["certificate"], "key": c["key"]})
     if automate:
         # Caddy handles HTTP-01 on this shared server; Xray retains its public port.
-        servers["http01"] = {"listen": [":80"], "protocols": ["h1"],
+        bindings = {address for n in nodes if own_target(n) and n["caddy"]["certificate_mode"] == "acme"
+                    for address in n["caddy"].get("http01_listen", [":80"])}
+        # A dual-stack wildcard covers IPv4 too; avoid overlapping listeners.
+        if ":80" in bindings or "[::]:80" in bindings:
+            bindings = {"[::]:80" if "[::]:80" in bindings else ":80"}
+        servers["http01"] = {"listen": sorted(bindings), "protocols": ["h1"],
                              "routes": [{"handle": [{"handler": "static_response", "status_code": 404}]}]}
     return {"admin": {"listen": "unix/" + (state / "admin.sock").as_posix(), "config": {"persist": False}},
             "storage": {"module": "file_system", "root": (state / "storage").as_posix()},
@@ -110,19 +115,28 @@ class Caddy:
         if not (old and own_target(old) and old["caddy"]["port"] == c["port"] and self.active()):
             port_free("127.0.0.1", c["port"], "tcp")
         if c["certificate_mode"] == "acme":
-            dns_matches(n["sni"], public_ips())
+            if old and own_target(old) and old["sni"] == n["sni"] and old["caddy"]["certificate_mode"] == "acme":
+                from .certificates import validate_pair
+                try:
+                    files = self.certificate_files(old)
+                    validate_pair(files["certificate.pem"], files["key.pem"], n["sni"])
+                    return
+                except PilotError:
+                    pass
+            bindings = http01_bindings(dns_matches(n["sni"], public_ips()))
+            c["http01_listen"] = ["[::]:80" if address == "::" else "0.0.0.0:80" for address in bindings]
             existing_acme = any(own_target(o) and o["caddy"]["certificate_mode"] == "acme" for o in others)
             if not existing_acme or not self.active():
-                port_free("0.0.0.0", 80, "tcp")
-                port_free("::", 80, "tcp")
+                for address in bindings:
+                    port_free(address, 80, "tcp")
 
-    def prepare(self, n, revision):
-        if own_target(n) and n["caddy"]["certificate_mode"] == "import":
-            from .certificates import prepare
+    def prepare(self, n, revision, renew=False):
+        if own_target(n) and n["caddy"]["certificate_mode"] != "acme":
+            from .certificates import holder, prepare
             c = n["caddy"]
-            holder = {"sni": n["sni"], "tls": {"mode": "import", "certificate": c["certificate"], "key": c["key"]}}
-            prepare(holder, revision)
-            c.update(certificate=holder["tls"]["certificate"], key=holder["tls"]["key"])
+            certificate_node = holder(n)
+            prepare(certificate_node, revision, renew, self.state)
+            c.update(certificate=certificate_node['tls']['certificate'], key=certificate_node['tls']['key'])
 
     def check(self, nodes, binary=None):
         directory = private_dir(self.state / "caddy")
@@ -184,7 +198,7 @@ class Caddy:
 
     def ready(self, n, timeout=180):
         c = n["caddy"]
-        cafile = c.get("certificate") if c["certificate_mode"] == "import" else None
+        cafile = c.get("certificate") if c["certificate_mode"] in {"import",'selfsigned'} else None
         deadline = time.monotonic() + timeout
         while True:
             try:
@@ -199,7 +213,7 @@ class Caddy:
         if not own_target(n):
             return {}
         c = n["caddy"]
-        if c["certificate_mode"] == "import":
+        if c["certificate_mode"] != "acme":
             return {"certificate.pem": Path(c["certificate"]), "key.pem": Path(c["key"])}
         domain = n["sni"].lower()
         base = self.state / "caddy/storage/certificates/acme-v02.api.letsencrypt.org-directory" / domain

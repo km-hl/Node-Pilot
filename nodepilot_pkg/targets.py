@@ -4,6 +4,10 @@ import json
 import socket
 import ssl
 import statistics
+import subprocess
+import re
+import selectors
+import os
 import sys
 import time
 import urllib.request
@@ -13,8 +17,8 @@ from .common import PilotError, run
 from .model import host, split_target
 
 # Candidates only: none is promised to be suitable or CDN-free. Screen at runtime.
-CANDIDATES = ("www.apple.com", "www.microsoft.com", "www.amazon.com", "www.samsung.com",
-              "www.oracle.com", "www.bing.com", "www.google.com", "dl.google.com")
+CANDIDATES = ("www.amazon.com", "aws.amazon.com", "www.samsung.com", "www.nvidia.com",
+              "www.amd.com", "www.intel.com", "www.sony.com", "www.oracle.com")
 
 
 def cloudflare_networks():
@@ -112,6 +116,80 @@ def http_headers(ip, port, sni, timeout=3):
             return status, headers
 
 
+class TargetFailure(PilotError):
+    def __init__(self, code, message):
+        self.code = code
+        super().__init__(message)
+
+
+def run_openssl(args, timeout):
+    """Stop the child as soon as output exceeds 64KiB, before buffering more."""
+    process=subprocess.Popen(args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    process.stdin.close()
+    data=bytearray();deadline=time.monotonic()+timeout
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout,selectors.EVENT_READ)
+            while True:
+                remaining=deadline-time.monotonic()
+                if remaining<=0:raise subprocess.TimeoutExpired(args,timeout)
+                if not selector.select(min(remaining,.2)):continue
+                block=os.read(process.stdout.fileno(),min(4096,65537-len(data)))
+                if not block:break
+                data.extend(block)
+                if len(data)>65536:raise TargetFailure('unverified','OpenSSL 输出超出检查上限')
+        code=process.wait(timeout=max(.01,deadline-time.monotonic()))
+        return subprocess.CompletedProcess(args,code,bytes(data),b'')
+    finally:
+        if process.poll() is None:
+            process.kill();process.wait()
+        process.stdout.close()
+
+
+def tls_handshake(ip, port, sni, timeout=4):
+    """Verify the actual negotiated group, ALPN and peer using system OpenSSL."""
+    address = f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
+    verify = "-verify_ip" if is_ip(sni) else "-verify_hostname"
+    args = ["openssl", "s_client", "-connect", address, "-servername", sni, "-tls1_3",
+            "-alpn", "h2", "-groups", "X25519", "-verify_return_error", verify, sni, "-no_ticket"]
+    started = time.monotonic()
+    try:
+        result = run_openssl(args,timeout)
+    except subprocess.TimeoutExpired as error:
+        raise TargetFailure("timeout", "TCP/TLS 握手超时") from error
+    except OSError as error:
+        raise TargetFailure("unverified", "OpenSSL 不可用，X25519 未验证") from error
+    output = (result.stdout + result.stderr).decode(errors="replace")
+    if len(output) > 65536:
+        raise TargetFailure("unverified", "OpenSSL 输出超出检查上限")
+    if result.returncode:
+        if re.search(r'Network is unreachable|No route to host',output,re.I):
+            raise TargetFailure('network_unreachable','此地址/地址族无可用路由')
+        if re.search(r'Connection refused|connect:errno',output,re.I):
+            raise TargetFailure('connection','目标 TCP 连接失败')
+        code = "certificate" if re.search(r"verify error|certificate verify|hostname mismatch", output, re.I) else "handshake"
+        raise TargetFailure(code, "证书链/SNI 验证失败" if code == "certificate" else "TCP/TLS 握手失败（要求 TLS 1.3 与 X25519）")
+    if not re.search(r"TLSv1\.3", output):
+        raise TargetFailure("tls", "未协商 TLS 1.3")
+    if not re.search(r"ALPN protocol:\s*h2\b", output):
+        raise TargetFailure("alpn", "未协商 HTTP/2 h2")
+    group = re.search(r"(?:Server|Peer) Temp Key:\s*(X25519(?:MLKEM768)?)[,\s]", output)
+    if not group:
+        raise TargetFailure("unverified", "实际 X25519 密钥交换组未验证")
+    if not re.search(r"Verify return code:\s*0\s*\(ok\)", output):
+        raise TargetFailure("certificate", "无法证明证书链和 SNI 验证通过")
+    return {"elapsed_ms": (time.monotonic() - started) * 1000, "group": group[1],
+            "tls": "TLSv1.3", "alpn": "h2", "certificate_verified": True}
+
+
+def is_ip(value):
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
 def inspect_target(target, sni, networks):
     h, port = split_target(target)
     host(sni, public=True)
@@ -122,40 +200,48 @@ def inspect_target(target, sni, networks):
     if h != sni:
         sni_ips, names = resolve(sni)
         exclude_cf(sni_ips, names, networks)
-    context = ssl.create_default_context()
-    context.minimum_version = ssl.TLSVersion.TLSv1_3
-    context.set_alpn_protocols(["h2"])
-    results = []
+    results, failures = [], []
     families = [[ip for ip in ips if ipaddress.ip_address(ip).version == version] for version in (4, 6)]
-    tested = [family[0] for family in families if family]
+    # Interleave families; do not let one unreachable first address hide the rest.
+    tested = [family[i] for i in range(3) for family in families if len(family) > i]
     for ip in tested:
         samples = []
         try:
             for _ in range(3):
-                start = time.monotonic()
-                with socket.create_connection((ip, port), timeout=3) as sock:
-                    with context.wrap_socket(sock, server_hostname=sni) as tls:
-                        if tls.version() != "TLSv1.3" or tls.selected_alpn_protocol() != "h2":
-                            raise PilotError("排除：不支持 TLS 1.3 / HTTP/2。")
-                        samples.append((time.monotonic() - start) * 1000)
-            status, headers = http_headers(ip, port, sni)
-            # CF on any reachable tested address excludes the entire hostname.
-            if cf_headers(headers):
-                raise PilotError("排除：HTTP 响应含 Cloudflare CDN 标记。")
-            if 300 <= status < 400 or "location" in headers:
-                raise PilotError("排除：该域名跳转至其他页面/域名。")
-            if not 200 <= status < 300:
-                raise PilotError("排除：根页面不可正常访问。")
-            results.append({"ip": ip, "median_ms": round(statistics.median(samples), 2),
-                            "spread_ms": round(max(samples) - min(samples), 2)})
-        except (OSError, ssl.SSLError):
+                sample = tls_handshake(ip, port, sni)
+                samples.append(sample["elapsed_ms"])
+            warnings, status = [], None
+            try:
+                status, headers = http_headers(ip, port, sni)
+                if cf_headers(headers):
+                    raise TargetFailure("cloudflare", "排除：HTTP 响应含 Cloudflare CDN 标记")
+                if 300 <= status < 400 or "location" in headers:
+                    warnings.append("根页面有跳转（未跟随），不影响已验证的 TLS 条件")
+                elif not 200 <= status < 300:
+                    warnings.append(f"根页面 HTTP {status}，网页质量需人工评估")
+            except TargetFailure:
+                raise
+            except (PilotError, OSError, ssl.SSLError):
+                warnings.append("HTTP/1.1 网页检查未成功；TLS/h2 已验证，CF 响应头未验证")
+            results.append({"ip": ip, "family": ipaddress.ip_address(ip).version,
+                            "median_ms": round(statistics.median(samples), 2),
+                            "spread_ms": round(max(samples) - min(samples), 2), "samples": 3,
+                            "group": sample["group"], "http_status": status, "warnings": warnings})
+        except (PilotError, OSError) as error:
+            if getattr(error, "code", "") == "cloudflare":
+                raise
+            failures.append({"ip": ip, "code": getattr(error, "code", "network"), "reason": str(error)})
             continue
     if not results:
-        raise PilotError("目标未通过三次有效证书/TLS 1.3/h2 握手及网页检查。")
+        raise PilotError("目标全部已测地址失败/未验证：" + "; ".join(f"{f['ip']} {f['code']} {f['reason']}" for f in failures))
     best = min(results, key=lambda x: (x["median_ms"], x["spread_ms"]))
-    return {"target": target, "sni": sni, "median_ms": best["median_ms"], "spread_ms": best["spread_ms"],
+    pinned = f"[{best['ip']}]:{port}" if best["family"] == 6 else f"{best['ip']}:{port}"
+    return {"target": pinned, "requested_target": target, "sni": sni, "median_ms": best["median_ms"], "spread_ms": best["spread_ms"],
+            "feasible": True, "tls": "TLSv1.3", "alpn": "h2", "group": best["group"],
+            "certificate_verified": True, "addresses": results, "failures": failures,
+            "untested_addresses": [ip for ip in ips if ip not in tested], "warnings": best["warnings"],
             "checked_at": datetime.now(timezone.utc).isoformat(), "cf_screened": True,
-            "note": "VPS 至目标 TCP+TLS 中位时延；仅预检，仍需真实 Reality 客户端验证。"}
+            "note": "VPS 至目标三次 OpenSSL TCP+TLS（含子进程开销）中位时延；不是长期或客户端联通证明。"}
 
 
 def rank_targets(domains=None, report=None):
@@ -168,7 +254,10 @@ def rank_targets(domains=None, report=None):
         try:
             result = inspect_target(domain + ":443", domain, networks)
             ranked.append(result)
-            message = f"{domain}：{result['median_ms']} ms（TCP+TLS），波动 {result['spread_ms']} ms"
+            message = f"{domain}：TLS1.3/h2/X25519/证书通过；{result['median_ms']} ms，波动 {result['spread_ms']} ms"
+            message += "；" + "；".join(result.get("warnings", [])) if result.get("warnings") else ""
+            for failure in result.get("failures", []):
+                message += f"\n  {failure['ip']}：{failure['code']} {failure['reason']}"
         except PilotError as e:
             message = f"{domain}：{e}"
         if report:

@@ -1,10 +1,12 @@
 # NodePilot
 
-轻量 VPS 节点搭建与管理工具，当前源码 `0.3.0`。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
+轻量 VPS 节点搭建与管理工具，当前源码 `0.4.0` 候选。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
 
 **当前状态：三协议已在 Debian 13 真实 VPS 上通过外网数据传输、HTTPS、生命周期及受限资源短测。** TLS 使用明确标记的测试自签名证书并在客户端导入信任，未关闭验证；ACME 实际签发、完整 256MiB 实机长测及 GUI 客户端矩阵仍待验证。详见 [真实 VPS 测试报告](docs/VPS_TEST_REPORT.md)、[本地记录](docs/VALIDATION.md) 和 [验收清单](docs/VPS_ACCEPTANCE.md)。
 
 仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.3.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.3.0)。Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)，版本选择与接管实测见 [v0.3.0 验证记录](docs/MANAGEMENT_VALIDATION.md)。
+
+v0.4.0 为候选交付，尚未发布稳定 Release；公开 main 安装命令继续提供 v0.3.0。新增 DNS-01、证书复用、卸载恢复、Reality 组检测、监听诊断和 Mihomo YAML，详见 [变更记录](CHANGELOG.md)、[审查计划](docs/VERSION_FOUR_PLAN.md) 和 [v0.4.0 验证记录](docs/VERSION_FOUR_VALIDATION.md)。候选源码可使用下方 `--local` 安装；其绑定的 v0.4.0 下载入口只在正式发布附件后生效。
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/km-hl/Node-Pilot/main/install.sh)
@@ -36,15 +38,18 @@ nodepilot
 
 - Reality 默认建议 TCP 443，AnyTLS 建议 TCP 8443，HY2 建议 UDP 443。始终先查占用；TCP 和 UDP 同一端口号可以共存。
 - 自动生成 UUID、密码、x25519 和 shortId；可输入自己的参数。Reality 私钥不出现在分享链接中。
-- Reality 默认询问自有域名：提供域名时采用 **Caddy 自动证书 + 本机目标**，SNI、serverNames、证书域名一致；本机目标只监听 127.0.0.1，Xray 使用 PROXY protocol v1 转发。Caddy 可反向代理用户指定 HTTPS 网站，默认欢迎页减少外部依赖和资源消耗。无域名时才提供第三方选站：从 VPS 实测三次 TCP+TLS 握手，按中位时延及波动排序，排除已检测到的 Cloudflare CDN、跳转和证书/TLS 1.3/h2 不合格站点。不固定默认热门 SNI。详见 [Reality 标准流程与选站依据](docs/REALITY_FLOW.md)。
-- TLS 方式：导入 PEM 完整链和无口令私钥、Let's Encrypt HTTP-01、明确标记的 30 天测试自签名。必须匹配 SNI；不生成 `insecure=1`。
-- HTTP-01 必须确认全部 A/AAAA 指向本机及公网 TCP 80 可达；检查本机端口占用，不会停止已有 Caddy/Nginx。ACME 邮箱可留空，需要同意 CA 条款。Reality 自建目标由独立 Caddy 申请/续期，AnyTLS/HY2 使用独立 certbot 目录。暂不支持 DNS-01。
-- 独立 `nodepilot-renew.timer` 每天检查本项目 ACME 证书，进入到期前 30 天时续期；复制到新修订后检查、重启，失败保留旧配置。导入证书/测试证书不自动续期，可在菜单 10 更换。
+- Reality 默认询问自有域名：提供域名时采用 **Caddy 证书 + 本机目标**，SNI、serverNames、证书域名一致；本机目标只监听 127.0.0.1，Xray 使用 PROXY protocol v1 转发。Caddy 可反向代理用户指定 HTTPS 网站，默认欢迎页减少资源消耗。无域名时才选第三方：通过 OpenSSL 实测三次可信证书/SNI、TLS 1.3、h2 和实际 X25519 组，按中位时延及波动排序；排除检测到的 CF。HTTP 跳转、403 等仅显示质量警告，不关闭证书校验。分 IPv4/IPv6 测最多各三个地址，失败继续其他 IP，保留未测/失败记录；自动推荐目标固定到本次验证的 IP，手动目标保留原输入。不改现有节点 SNI。详见 [Reality 流程](docs/REALITY_FLOW.md)。
+- 证书菜单：1 HTTP-01、2 Cloudflare DNS-01、3 导入 PEM、4 明确标记的 30 天测试自签名。必须匹配 SNI；不生成 `insecure=1`。自建 Caddy 也支持四种方式，DNS-01 由独立 certbot 签发 PEM，使用官方 Caddy 即可。
+- HTTP-01 必须确认全部 A/AAAA 指向本机及公网 TCP 80 可达；只检查 DNS 实际发布的地址族，IPv6 内核不可用不影响合法 IPv4-only 申请。IPv6-only 域名要求本机 IPv6 真正可用。不会停止已有 Caddy/Nginx。ACME 邮箱可留空，需要同意 CA 条款。
+- Cloudflare DNS-01 无需 TCP 80，也不要求 A/AAAA 指向 VPS。Token 限定所需 Zone 的 DNS:Edit/Zone:Read；输入 Zone ID 和传播等待时间。NodePilot 使用发行版 certbot 插件自动创建/清理 TXT、等待传播；Token 隐藏输入，存独立 0600 文件，不写入节点元数据、分享链接、命令行或单元。独立 runner 在日志写入前脱敏，并隔离 SDK 全局凭据及 certbot 配置。真实 CA/DNS 签发仍待可用域名/Token 实测。
+- 有效且域名未变的 certbot 证书优先复用，不因只改密码/端口再次申请；临期 30 天内续期。`nodepilot-renew.timer` 管理 AnyTLS/HY2 及 Caddy DNS-01 证书，成功后以新修订检查、重启/reload，失败保留旧修订。Caddy HTTP-01 仍由自身管理。菜单 10 可看详情、手动强制 certbot 续期或更换证书；强制续期受 CA 频率限制，Caddy HTTP-01 暂不提供手工强制签发。
 - HY2 可配置 salamander、认证密码、SNI、UDP 端口和带宽提示。带宽值影响拥塞控制，不能提高实际链路容量，也不等同于硬限速。
 - 只读展示 ss、内存与主机防火墙规则。**不会自动放行端口**；请在主机防火墙和云安全组自行放行准确的 TCP/UDP 端口。规则存在也不能证明公网 UDP 可达。
 - 确认统一使用 y/n，支持 Y/N，错误输入会重新提示；危险操作默认 n，删除、卸载、接管和归还仍需两次确认。
 - 菜单 14 只检查当前/最新稳定版本，不下载安装或重启；菜单 9 可安装/更新指定版本。首次按需安装内核也可选版本。
 - 菜单 13 检查、导入和接管现有独立 Xray/sing-box，也可归还原服务。默认保留原服务，只有预检全部通过且两次确认后才切换，详细范围见下文。
+- 节点列表显示 SNI/target、监听、证书状态和最近测试；服务检查结合 systemd Result/退出状态/重启次数及 MainPID 拥有的实际 TCP/UDP socket。修改前展示不含秘密的摘要并确认，提醒旧客户端链接可能失效。菜单 8 可做本机 Reality 代理 HTTPS 测试，始终单独标注公网未验证。
+- 菜单 10 导出私有 Mihomo YAML，三协议字段按官方格式编码，保持 `skip-cert-verify: false`；自签名须在客户端导入信任。旧 Clash/不支持 AnyTLS 的客户端不能据此获得协议支持。
 
 ## 数据、安全与恢复
 
@@ -57,6 +62,9 @@ nodepilot
     pending.json                 仅在事务中存在
   backups/                       私有、含凭据的 JSON 备份
   adoptions/a-<随机ID>/           私有原配置、单元、证书备份及持久化切换记录
+  uninstall.json                 卸载阶段和恢复进度；不等同于原子卸载
+  credentials/cf-<随机ID>.ini     0600 Cloudflare Token；不包含在节点导出中
+  certificate-status/ / probes/  私有续期状态及本机测试结果
   acme/n-<随机ID>/                独立 certbot 配置/账户/日志
   caddy/config.json / admin.sock  共享目标配置、私有 Unix 管理套接字
   caddy/storage/                 自建目标的私有证书/ACME 账户
@@ -79,6 +87,8 @@ Caddy 聚合配置另经 `caddy validate` 检查，通过私有 Unix 套接字 r
 
 服务单元内容必须与项目生成内容一致才可停止/卸载；遇到外部修改时安全中止。程序卸载根据文件清单删除，不递归删除未知用户添加的程序文件。私有备份保留在 `/etc/nodepilot/backups/`；不卸载系统依赖，不删除其他软件的证书/服务，不改 IPv6/sysctl/全局网络参数。
 
+卸载先检查全部单元和程序清单、保存私有备份，再停服务；删除配置前失败/中断，会在下次进管理器恢复原启用/运行状态。进入 `finalizing` 后只继续项目文件清理，不能恢复成原安装；若程序已部分删除，用可信 v0.4.0 或更新源码执行 `bash install.sh --local --upgrade` 修复后续做。候选期 main 的 v0.3.0 不能恢复新事务。此过程不是原子卸载。私有备份、接管记录、凭据和事务记录保留，确认不需要后自行清理；活跃接管仍需先归还。
+
 恢复需要可信备份和**空节点集合**，逐节点配置检查并启动，失败回退已恢复节点。证书恢复为导入模式；不会误认为备份已迁移 ACME 账户或自动续期能力，需要在菜单重新配置 ACME。历史节点修订、备份和旧内核版本暂不自动清理；频繁更新需要注意磁盘空间。
 
 ## 接管与归还现有服务
@@ -97,7 +107,7 @@ Caddy 聚合配置另经 `caddy validate` 检查，通过私有 Unix 套接字 r
 
 内核只从官方 GitHub 稳定发布获取。API 必须提供附件 SHA-256，下载采用 HTTPS、超时、重试和大小上限，验证压缩包后仅提取所需内核，再核对 ELF 架构和执行报告版本。不提供校验值或校验失败会中止；不回退到执行未校验文件。
 
-版本输入支持 `latest`、`list` 或完整 `v1.2.3` / `1.2.3`，输入 `0` 取消。列表只展示官方最近 30 条发布中满足最低要求的稳定版本；其他稳定版本可手工输入。最低支持 Xray 25.3.6、sing-box 1.12.0、Caddy 2.7.0，仍需通过当前节点的原生配置检查；旧发布没有官方附件 SHA-256 时拒绝安装。NodePilot 版本选择最低 v0.3.0，以免旧管理器无法恢复接管记录。
+版本输入支持 `latest`、`list` 或完整版本号，输入 `0` 取消。列表分批读取官方最近 30 条发布；其他稳定版本可手工输入。最低 Xray 25.3.6、sing-box 1.12.0、Caddy 2.7.0，仍需通过当前节点原生检查和官方 SHA-256。v0.4.0 管理器拒绝选择旧脚本版本，以免旧代码忽略 DNS-01/卸载事务；候选期尚无可用 v0.4.0 稳定发布。
 
 可用 `NODEPILOT_MIRROR=https://可信镜像前缀` 更换内核附件传输：官方失败后请求 `前缀/原始HTTPS-URL`，校验值仍来自官方 API。官方元数据不可达时安全中止；不绕过 TLS。SHA-256 + 官方 HTTPS 验证的是发布来源与下载一致性，不声称等价于独立维护者签名。
 
@@ -113,7 +123,7 @@ bash install.sh --local --upgrade
 
 生成标准 `vless://`、`anytls://`、`hysteria2://`，正确编码密码、query 和中文名称，IPv6 加方括号。HY2 链接不携带机器相关的带宽值。自签名必须手动在客户端导入节点 `certificate.pem` 为信任证书，URI 不能单独传递完整信任关系；不会默认关闭证书校验。
 
-已将导出 URI 解析为 sing-box 1.14.3 客户端配置，三协议均完成真实传输；Reality 另通过 Xray 26.3.27 客户端交叉验证。Mihomo/Clash Meta、v2rayN、Egern GUI 导入尚未逐一实测，不能把结果推广成所有客户端兼容；旧版 Clash 和不支持 AnyTLS 的客户端不能使用 AnyTLS。遇到 URI 不支持时手动配置其受支持的出站类型。此版本不导出 Mihomo YAML，不提供订阅服务器。
+导出 URI 的 sing-box 1.14.3 三协议已完成真实传输，Reality 另有 Xray 26.3.27 验证。Mihomo 1.19.32 官方内核通过三协议 YAML/IPv6/转义字段解析；其 GUI、公网连通及 v2rayN、Egern GUI 矩阵仍未验证。不要推广成所有客户端兼容。YAML 是 proxies 片段，需要合入客户端自己的分组和规则；不提供订阅服务器。
 
 ## 1c / 256MiB
 
@@ -122,6 +132,8 @@ bash install.sh --local --upgrade
 `GOMEMLIMIT` 是 Go 内存软目标，**不是 RSS 硬上限**。v0.1.0 的单核、192MiB、禁 swap 冷启动三内核测试组峰值约 171.5MiB，无 OOM；该旧结果不包含新增 Caddy，不能作为 v0.2.0 四进程资源证明。实际 VPS 为 1c/2GiB；测试组不包含完整 OS、SSH 和 ACME 续期，仍不能宣称完整 256MiB 机器长期验收通过。正式服务没有自动设置硬内存限制、swap 或全局 sysctl。
 
 v0.2.0 已补测同样单核/192MiB/禁 swap 的冷启动组，含 Xray、两个 sing-box、共享 Caddy 和采样 Python，三协议各 8MiB、最多 4 并发及 HTTPS 全部通过。没有 OOM，但内存曾触及 192MiB 上限并发生回收压力（memory.events max=322）；这不是自然峰值或完整 256MiB 整机验收。ACME 签发/续期和长期负载仍需另测。
+
+v0.4.0 补测 256/512/1024MiB cgroup，各含单协议和三协议，共 12 组，无 OOM/无 swap。包括配置检查、重启、OpenSSL 测试证书生成和加密请求；256MiB 三协议组还执行 sing-box 官方候选下载/校验/替换启动。该组峰值触及限制、max=698，不能证明完整 256MiB 整机有足够余量。ACME 工具实际签发、整机及长测仍待验证，详见验证记录。
 
 ## 开发验证
 
@@ -133,6 +145,7 @@ bash -n install.sh
 shellcheck install.sh
 python3 nodepilot self-check
 python3 tools/native_check.py --download
+python3 tools/mihomo_check.py --download
 ```
 
 最后一条仅将已校验官方内核保存到忽略的 `.test-tools/`，执行真实配置检查，不部署节点。后续可不带 `--download`。
@@ -160,14 +173,14 @@ GitHub Actions 会执行上传范围/秘密指标检查、单元测试、shellch
 发布前先按 [上传隐私检查](CONTRIBUTING.md) 审查源码、提交身份、Git blob 和附件；本仓库示例：
 
 ```bash
-python3 tools/package.py --repo km-hl/Node-Pilot --tag v0.3.0
-python3 tools/release_audit.py --repo km-hl/Node-Pilot --tag v0.3.0
+python3 tools/package.py --repo km-hl/Node-Pilot --tag v0.4.0
+python3 tools/release_audit.py --repo km-hl/Node-Pilot --tag v0.4.0
 ```
 
-打包只生成 `dist/nodepilot-0.3.0.tar.gz`、校验文件和带**固定附件 URL / SHA-256**的 `dist/install.sh`，不自动上传。将审核后的生成安装器同步到源码 `install.sh`，提交后执行 release_audit 对比附件与 Git HEAD。Release 必须包含 `install.sh` 附件才能在线升级。对应版本入口：
+打包只生成 `dist/nodepilot-0.4.0.tar.gz`、校验文件和带**固定附件 URL / SHA-256**的 `dist/install.sh`，不自动上传。候选包不等于已发布稳定版；将生成安装器同步到源码，提交后对比 Git HEAD。Release 必须包含 `install.sh` 附件才能在线升级。正式发布后对应入口：
 
 ```bash
-bash <(curl -fsSL https://github.com/km-hl/Node-Pilot/releases/download/v0.3.0/install.sh)
+bash <(curl -fsSL https://github.com/km-hl/Node-Pilot/releases/download/v0.4.0/install.sh)
 ```
 
 修改项目文件后必须重新打包和生成校验值。项目包仅含显式允许的管理器文件，不包含运行时配置、测试内核或凭据。
