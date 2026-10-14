@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import certificates
+from .caddy import Caddy, own_target
 from .common import PilotError, atomic_bytes, atomic_json, fsync_dir, private_dir, read_json
 from .config import generate
 from .cores import Cores
@@ -19,10 +20,11 @@ OWNER = "NodePilot schema=1\n"
 
 
 class Manager:
-    def __init__(self, state=Path("/etc/nodepilot"), cores=None, services=None):
+    def __init__(self, state=Path("/etc/nodepilot"), cores=None, services=None, caddy=None):
         self.state = Path(state)
         self.cores = cores or Cores()
         self.services = services or Services(state)
+        self.caddy = caddy or Caddy(self.state, self.cores, self.services.units)
 
     def initialize(self):
         marker = self.state / ".owner"
@@ -94,6 +96,9 @@ class Manager:
             revision = self.revision(n["id"])
             files = {name: base64.b64encode((revision / name).read_bytes()).decode()
                      for name in ("certificate.pem", "key.pem") if (revision / name).exists()}
+            if own_target(n):
+                files = {name: base64.b64encode(p.read_bytes()).decode()
+                         for name, p in self.caddy.certificate_files(n).items()}
             nodes.append({"node": n, "files": files})
         path = self.state / "backups" / ("backup-" + secrets.token_hex(8) + ".json")
         atomic_json(path, {"schema": 1, "nodes": nodes})
@@ -109,10 +114,19 @@ class Manager:
         for other in self.nodes():
             if other["id"] != n["id"] and conflicts(n, other):
                 raise PilotError(f"端口与节点 {other['id']} 的 {other['transport']} 监听冲突。")
+            if own_target(other) and n["transport"] == "tcp" and (n["port"] == other["caddy"]["port"] or
+                    (n["port"] == 80 and other["caddy"]["certificate_mode"] == "acme")):
+                raise PilotError("TCP 端口由 NodePilot Caddy 目标/HTTP-01 使用。")
         if not old or not same_binding(n, old) or not self.services.active(old):
             port_free(n["listen"], n["port"], n["transport"])
-        if probe and n["protocol"] == "reality":
+        managed = own_target(n) or (old and own_target(old))
+        if managed:
+            self.caddy.preflight(n, old, self.nodes())
+        if probe and n["protocol"] == "reality" and not own_target(n):
+            from .targets import inspect_target, cloudflare_networks
+            networks = cloudflare_networks()
             for sni in n["reality"]["server_names"]:
+                inspect_target(n["reality"]["target"], sni, networks)
                 probe_reality(n["reality"]["target"], sni)
         if old:
             self.services.assert_owned(old)
@@ -128,10 +142,16 @@ class Manager:
         try:
             if n["protocol"] != "reality":
                 certificates.prepare(n, revision, renew)
+            elif own_target(n):
+                self.caddy.prepare(n, revision)
             atomic_json(revision / "node.json", n)
             atomic_json(revision / "config.json", generate(n))
             self.cores.check(n, revision / "config.json")
             self.point(n["id"], revision)
+            if managed:
+                self.caddy.sync(self.nodes())
+                if own_target(n):
+                    self.caddy.ready(n)
             if not old:
                 self.services.install(n)
             self.services.restart(n)
@@ -139,11 +159,16 @@ class Manager:
             try:
                 if old:
                     self.point(n["id"], old_revision)
+                    if managed:
+                        self.caddy.sync(self.nodes())
                     self.services.restart(old)
                 else:
                     self.services.assert_owned(n, missing=True)
                     if (self.services.units / n["service"]).exists():
                         self.services.remove(n)
+                    (path / "current").unlink(missing_ok=True)
+                    if managed:
+                        self.caddy.sync(self.nodes())
                     shutil.rmtree(path)
             except Exception as rollback:
                 raise PilotError(f"操作失败且自动回滚未完成：{rollback}；保留 pending.json，重新进入菜单恢复。") from error
@@ -160,13 +185,30 @@ class Manager:
         backup = self.backup()
         path = self.node_dir(node_id)
         atomic_json(path / "pending.json", {"kind": "delete", "node": n})
-        self.services.remove(n)
+        try:
+            self.services.remove(n)
+            if own_target(n):
+                self.caddy.sync([o for o in self.nodes() if o["id"] != node_id])
+        except (Exception, KeyboardInterrupt):
+            if not (self.services.units / n["service"]).exists():
+                self.services.install(n)
+            if own_target(n):
+                self.caddy.sync(self.nodes())
+            self.services.restart(n)
+            (path / "pending.json").unlink(missing_ok=True)
+            raise
         # Delete only the exact, validated random-ID subtree. ACME data is separately owned.
         shutil.rmtree(path)
         acme_dir = self.state / "acme" / node_id
         if acme_dir.is_dir() and not acme_dir.is_symlink():
             shutil.rmtree(acme_dir)
         return backup
+
+    def restart(self, n):
+        if own_target(n):
+            self.caddy.sync(self.nodes())
+            self.caddy.ready(n)
+        self.services.restart(n)
 
     def recover(self):
         for path in sorted((self.state / "nodes").iterdir()):
@@ -181,35 +223,51 @@ class Manager:
             if record["kind"] == "delete":
                 if (self.services.units / n["service"]).exists():
                     self.services.remove(n)
+                if own_target(n):
+                    self.caddy.sync([o for o in self.nodes() if o["id"] != n["id"]])
                 shutil.rmtree(path)
             elif record.get("old"):
                 self.point(n["id"], Path(record["old"]))
+                if own_target(n) or own_target(self.get(n["id"])):
+                    self.caddy.sync(self.nodes())
                 self.services.restart(self.get(n["id"]))
                 pending.unlink()
             else:
                 if (self.services.units / n["service"]).exists():
                     self.services.remove(n)
+                (path / "current").unlink(missing_ok=True)
+                if own_target(n):
+                    self.caddy.sync(self.nodes())
                 shutil.rmtree(path)
 
     def update_core(self, core):
-        affected = [n for n in self.nodes() if n["core"] == core]
+        affected = [n for n in self.nodes() if n["core"] == core or (core == "caddy" and own_target(n))]
         for n in affected:
             self.services.assert_owned(n)
         self.backup()
         destination = self.cores.stage(core)
-        for n in affected:
-            self.cores.check(n, self.revision(n["id"]) / "config.json", destination / core)
+        if core == "caddy" and affected:
+            self.caddy.check(self.nodes(), destination / core)
+        else:
+            for n in affected:
+                self.cores.check(n, self.revision(n["id"]) / "config.json", destination / core)
         current = self.cores.root / core / "current"
         old = current.resolve() if current.exists() else None
         pending = self.state / "core-pending.json"
         atomic_json(pending, {"core": core, "old": str(old) if old else None})
         try:
             self.cores.switch(core, destination)
+            if core == "caddy" and affected:
+                self.caddy.sync(self.nodes(), restart=True)
+                for n in affected:
+                    self.caddy.ready(n)
             for n in affected:
                 self.services.restart(n)
         except (Exception, KeyboardInterrupt) as e:
             if old:
                 self.cores.switch(core, old)
+                if core == "caddy" and affected:
+                    self.caddy.sync(self.nodes(), restart=True)
                 for n in affected:
                     self.services.restart(n)
             else:
@@ -224,13 +282,15 @@ class Manager:
         if pending.exists():
             record = read_json(pending)
             core = record["core"]
-            if core not in {"xray", "sing-box"}:
+            if core not in {"xray", "sing-box", "caddy"}:
                 raise PilotError("非法内核恢复记录。")
             if record["old"]:
                 old = Path(record["old"])
                 if old.resolve().parent != (self.cores.root / core).resolve():
                     raise PilotError("内核恢复路径越界。")
                 self.cores.switch(core, old)
+                if core == "caddy":
+                    self.caddy.sync(self.nodes(), restart=True)
                 for n in self.nodes():
                     if n["core"] == core:
                         self.services.restart(n)
@@ -254,13 +314,16 @@ class Manager:
             with tempfile.TemporaryDirectory(prefix="restore-", dir=self.state) as tmp:
                 for entry in bundle["nodes"]:
                     n = validate(entry["node"])
-                    if n["protocol"] != "reality":
+                    if n["protocol"] != "reality" or own_target(n):
                         for name in ("certificate.pem", "key.pem"):
                             data = base64.b64decode(entry["files"][name], validate=True)
                             if len(data) > 256 * 1024:
                                 raise PilotError("证书备份过大。")
                             atomic_bytes(Path(tmp) / name, data)
-                        n["tls"].update(mode="import", certificate=str(Path(tmp) / "certificate.pem"), key=str(Path(tmp) / "key.pem"))
+                        if own_target(n):
+                            n["caddy"].update(certificate_mode="import", certificate=str(Path(tmp) / "certificate.pem"), key=str(Path(tmp) / "key.pem"))
+                        else:
+                            n["tls"].update(mode="import", certificate=str(Path(tmp) / "certificate.pem"), key=str(Path(tmp) / "key.pem"))
                     saved = self.apply(n)
                     restored.append(saved["id"])
         except (Exception, KeyboardInterrupt):

@@ -14,6 +14,8 @@ nodepilot_pkg/
   system.py / download.py   OS、端口、公网 IP、校验下载
   cores.py                  官方内核、版本与架构检查
   certificates.py           证书导入、自签名、certbot HTTP-01
+  caddy.py                  自建 Reality 目标、共享 Caddy、配置校验与重载
+  targets.py                从本 VPS 排除 CF、有效证书/协议检查、时延排名
   services.py / manager.py  独立服务、修订和回滚
   menu.py / cli.py           TTY 交互与离线检查
 tests/                      单元、故障注入、官方内核检查
@@ -27,6 +29,8 @@ docs/                       规范、验证记录、VPS 验收清单
 通用字段：schema、id、name、protocol、core、transport、listen、port、server（分享地址）、sni、service、created_at。
 
 Reality：reality.uuid、private_key、public_key、short_id、server_names、target、fingerprint。私钥仅用于服务端配置，分享只含公钥。TLS：password、tls.mode / certificate / key；HY2 另可含 obfs、up_mbps、down_mbps。
+
+Reality 新增 reality.mode（self / external；旧记录缺省 external）。self 使用 caddy.domain / port / certificate_mode（acme / import）/ email（可选）/ upstream（可选）及导入证书路径；target 必须精确为本机 127.0.0.1:caddy.port，SNI、domain 与唯一 serverNames 相同。external 的 reality.selection 记录测量时间、中位时延与波动，不代表长期可用或真实联通证明。schema 保持 1，旧节点不自动迁移。
 
 所有运行时目录 0700、文件 0600；元数据包含认证秘密，不是公开节点清单。公网 IP 探测失败时手动输入，不回退到本机私网地址。端口冲突按 TCP/UDP 区分；TCP 与 UDP 443 可以共存。
 

@@ -119,13 +119,15 @@ def conflicts(a, b):
     return x == y or x.is_unspecified or y.is_unspecified
 
 
-def probe_reality(target, sni):
+def probe_reality(target, sni, proxy=False, cafile=None, timeout=8):
     h, p = split_target(target)
-    context = ssl.create_default_context()
+    context = ssl.create_default_context(cafile=cafile)
     context.minimum_version = ssl.TLSVersion.TLSv1_3
     context.set_alpn_protocols(["h2"])
     try:
-        with socket.create_connection((h, p), timeout=8) as sock:
+        with socket.create_connection((h, p), timeout=timeout) as sock:
+            if proxy:
+                sock.sendall(f"PROXY TCP4 127.0.0.1 127.0.0.1 1 {p}\r\n".encode())
             with context.wrap_socket(sock, server_hostname=sni) as tls:
                 if tls.version() != "TLSv1.3" or tls.selected_alpn_protocol() != "h2":
                     raise PilotError("Reality 目标必须通过 TLS 1.3 / h2 探测；请另选目标。")

@@ -167,7 +167,7 @@ class ManagerTests(unittest.TestCase):
                 self.manager.restore(backup)
             self.manager.delete(a["id"])
             # Reality network probing belongs to separate native/VPS checks.
-            with patch("nodepilot_pkg.manager.probe_reality"):
+            with patch("nodepilot_pkg.manager.probe_reality"), patch("nodepilot_pkg.targets.inspect_target"), patch("nodepilot_pkg.targets.cloudflare_networks", return_value=[]):
                 ids = self.manager.restore(backup)
         self.assertEqual(ids, [a["id"]])
         self.assertEqual(self.manager.get(a["id"]), a)

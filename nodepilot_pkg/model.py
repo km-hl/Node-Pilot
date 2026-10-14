@@ -82,6 +82,26 @@ def validate(n):
             raise PilotError("Reality target 端口无效。")
         if r["fingerprint"] not in {"chrome", "firefox", "safari", "edge", "ios", "android", "random", "randomized"}:
             raise PilotError("不支持的客户端 uTLS fingerprint。")
+        if r.get("mode", "external") not in {"self", "external"}:
+            raise PilotError("非法 Reality 目标模式。")
+        if r.get("mode") == "self":
+            c = n.get("caddy", {})
+            if is_ip(n["sni"]) or c.get("domain") != n["sni"] or r["server_names"] != [n["sni"]]:
+                raise PilotError("自建 Reality 的域名、SNI 和唯一 serverNames 必须一致。")
+            if type(c.get("port")) is not int or not 1024 <= c["port"] <= 65535 or c["port"] == n["port"]:
+                raise PilotError("Caddy 本机端口须为 1024–65535，且不同于节点端口。")
+            if r["target"] != f"127.0.0.1:{c['port']}" or n["port"] == 80:
+                raise PilotError("自建 Reality 必须指向本机 Caddy；TCP 80 保留给 HTTP-01。")
+            if c.get("certificate_mode") not in {"acme", "import"}:
+                raise PilotError("Caddy 证书只支持自动 ACME 或导入。")
+            email(c.get("email", ""))
+            if c["certificate_mode"] == "import" and (not c.get("certificate") or not c.get("key")):
+                raise PilotError("导入 Caddy 证书需要证书和私钥路径。")
+            if c.get("upstream"):
+                h, p = split_target(c["upstream"])
+                host(h, public=True)
+                if is_ip(h) or p != 443:
+                    raise PilotError("网页来源须为 HTTPS 域名:443。")
     else:
         if not isinstance(n.get("password"), str) or len(n["password"]) < 16 or any(ord(c) < 32 for c in n["password"]):
             raise PilotError("密码至少 16 字符且不能包含控制字符。")
@@ -99,6 +119,20 @@ def validate(n):
                 if f in n and (type(n[f]) is not int or not 1 <= n[f] <= 100000):
                     raise PilotError("带宽提示必须为 1–100000 Mbps 的整数。")
     return n
+
+
+def is_ip(value):
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def email(value):
+    if not isinstance(value, str) or len(value) > 254 or (value and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value)):
+        raise PilotError("邮箱可留空；填写时须为有效联系邮箱。")
+    return value
 
 
 def split_target(value):

@@ -66,7 +66,7 @@ def fetch(url, path, expected=None, limit=160 * 1024 * 1024):
 
 
 def github_release(repo, directory):
-    if repo not in {"XTLS/Xray-core", "SagerNet/sing-box"}:
+    if repo not in {"XTLS/Xray-core", "SagerNet/sing-box", "caddyserver/caddy"}:
         raise PilotError("内核必须来自指定官方仓库。")
     path = Path(directory) / "release.json"
     fetch(f"https://api.github.com/repos/{repo}/releases/latest", path, limit=2 * 1024 * 1024)
@@ -82,7 +82,7 @@ def github_release(repo, directory):
 def verified_asset(asset, directory):
     url = asset.get("browser_download_url", "")
     u = urlsplit(url)
-    if u.hostname != "github.com" or not u.path.startswith(("/XTLS/Xray-core/releases/download/", "/SagerNet/sing-box/releases/download/")):
+    if u.hostname != "github.com" or not u.path.startswith(("/XTLS/Xray-core/releases/download/", "/SagerNet/sing-box/releases/download/", "/caddyserver/caddy/releases/download/")):
         raise PilotError("发布附件不属于官方来源。")
     digest = asset.get("digest", "") or ""
     if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):

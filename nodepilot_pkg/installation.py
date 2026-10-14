@@ -62,7 +62,7 @@ def remove_program_files(root):
         empty_dir(app)
     cores = root / "cores"
     if cores.is_dir() and not cores.is_symlink():
-        for name in ("xray", "sing-box"):
+        for name in ("xray", "sing-box", "caddy"):
             parent = cores / name
             if not parent.is_dir() or parent.is_symlink():
                 continue
@@ -106,6 +106,9 @@ def uninstall(manager, root=Path("/opt/nodepilot"), launcher=Path("/usr/local/bi
             raise PilotError("续期单元存在外部 drop-in，拒绝自动卸载。")
     for n in manager.nodes():
         manager.services.assert_owned(n)
+        from .caddy import own_target
+        if own_target(n):
+            manager.caddy.assert_owned()
     backup = manager.backup()
     for n in manager.nodes():
         manager.delete(n["id"])

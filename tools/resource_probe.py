@@ -22,13 +22,16 @@ def main():
     p.add_argument("--private-dir", type=Path, required=True)
     p.add_argument("--duration", type=int, default=180)
     p.add_argument("--cold-binaries", action="store_true", help="在测试cgroup中复制并校验新inode，避免预热代码页被计入其他cgroup")
+    p.add_argument("--state-dir", type=Path, default=Path("/etc/nodepilot"))
+    p.add_argument("--cores-root", type=Path, default=Path("/opt/nodepilot/cores"))
+    p.add_argument("--with-caddy", action="store_true", help="同时计量临时测试的共享 Caddy 进程")
     args = p.parse_args()
     root_required()
     if not 10 <= args.duration <= 300:
         p.error("duration must be 10..300 seconds")
     record = read_json(args.private_dir / "test-nodes.json")
     # Parent controller must stop only its recorded test services first.
-    cores = Cores()
+    cores = Cores(args.cores_root)
     children, handles = [], []
     environment = dict(os.environ, GOMEMLIMIT="64MiB", GOGC="50", GOMAXPROCS="1")
     stats = {"peak_memory_current_bytes": 0, "peak_sum_rss_kib": 0, "peak_swap_current_bytes": 0,
@@ -39,7 +42,8 @@ def main():
     scratch = tempfile.TemporaryDirectory(prefix="resource-binaries-", dir=args.private_dir) if args.cold_binaries else None
     try:
         binaries = {}
-        for core in {n["core"] for n in record["nodes"]}:
+        required = {n["core"] for n in record["nodes"]} | ({"caddy"} if args.with_caddy else set())
+        for core in required:
             original = cores.binary(core)
             if scratch:
                 copied = Path(scratch.name) / core
@@ -70,9 +74,16 @@ def main():
             log = (args.private_dir / (n["protocol"] + "-resource.log")).open("wb")
             os.chmod(log.name, 0o600)
             handles.append(log)
-            config = Path("/etc/nodepilot/nodes") / n["id"] / "current/config.json"
+            config = args.state_dir / "nodes" / n["id"] / "current/config.json"
             command = [str(binaries[n["core"]]), "run", "-config" if n["core"] == "xray" else "-c", str(config)]
             children.append(subprocess.Popen(command, stdout=log, stderr=log, env=environment))
+        if args.with_caddy:
+            log = (args.private_dir / "caddy-resource.log").open("wb")
+            os.chmod(log.name, 0o600)
+            handles.append(log)
+            env = dict(environment, GOMEMLIMIT="32MiB")
+            children.append(subprocess.Popen([str(binaries["caddy"]), "run", "--config", str(args.state_dir / "caddy/config.json")],
+                                             stdout=log, stderr=log, env=env))
         stats.update(memory_max_bytes=(cgroup / "memory.max").read_text().strip(),
                      swap_max_bytes=(cgroup / "memory.swap.max").read_text().strip(),
                      cpu_max=(cgroup / "cpu.max").read_text().strip(), ready=True)

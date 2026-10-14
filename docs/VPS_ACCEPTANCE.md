@@ -1,10 +1,10 @@
 # 真正 VPS 上的第一阶段验收
 
-本清单尚未执行；请在可销毁的干净 Debian 13 / Ubuntu 24.04 VPS 上完成。不要将 WSL 配置与监听检查标为外网成功。
+本清单并非全部通过；已完成的真实 Debian 13 检查见 [v0.1.0 报告](VPS_TEST_REPORT.md) 和 [v0.2.0 报告](CADDY_VALIDATION.md)。干净 Ubuntu/arm64、真实 ACME、完整 256MiB 整机与长测仍待执行。不要将配置与监听检查标为外网成功。
 
 1. 准备 1c/256MiB 实机，记录 `free -m`、架构、系统、已有服务和防火墙；另准备有 Caddy / Xray / sing-box 的测试机检查共存。
 2. 从真实发布 URL 执行单条安装命令。确认安装器校验项目包、选择节点时校验官方稳定内核并自动进入菜单。测试普通 SSH、`curl ... | bash` 和窄终端。
-3. 创建 Reality TCP 443，选实际支持 TLS 1.3/h2 和所填 serverNames 的 target，确认原生配置检查、公钥链接、客户端 Vision 连接；确认分享未含私钥。
+3. 默认创建自有域名 Reality，Caddy HTTP-01 自动申请、等待本机目标证书/TLS 就绪，验证 Xray PROXY v1 和真实 Vision 客户端连接；再测试无域名时从 VPS 实测非 CF 目标。CF、跳转及 TLS 不合格站点须排除；确认分享未含私钥。
 4. 创建 AnyTLS TCP 8443。先检查域名全部 A/AAAA，放行 HTTP-01 TCP 80，用 ACME 实际签发并验证链；再测证书导入、SNI 不匹配拒绝和测试自签名手动信任。
 5. 创建 HY2 UDP 443，按需使用 salamander。检查 ss、主机防火墙和云安全组；从外部客户端真实 QUIC 连接，测试密码和混淆错误。
 6. 分别在目标版本 Mihomo/Clash Meta、sing-box、v2rayN、Egern 测导入与连接；记录版本和不支持项，不把某一个客户端成功推广成所有兼容。

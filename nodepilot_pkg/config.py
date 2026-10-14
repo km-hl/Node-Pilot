@@ -11,7 +11,7 @@ def generate(n):
             "protocol": "vless", "settings": {"decryption": "none", "clients": [{
                 "id": r["uuid"], "flow": "xtls-rprx-vision"}]},
             "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {
-                "show": False, "target": r["target"], "xver": 0,
+                "show": False, "target": r["target"], "xver": 1 if r.get("mode") == "self" else 0,
                 "serverNames": r["server_names"], "privateKey": r["private_key"],
                 "shortIds": [r["short_id"]]}}}],
             "outbounds": [{"protocol": "freedom", "tag": "direct"}]}

@@ -45,10 +45,11 @@ def acme(n):
     from .common import private_dir
     private_dir(base)
     email = tls.get("email", "")
-    if "@" not in email or any(c.isspace() for c in email):
-        raise PilotError("请输入有效 ACME 联系邮箱。")
+    from .model import email as validate_email
+    validate_email(email)
+    contact = ["--email", email] if email else ["--register-unsafely-without-email"]
     run(["certbot", "certonly", "--standalone", "--preferred-challenges", "http",
-         "--http-01-port", "80", "--non-interactive", "--agree-tos", "--email", email,
+         "--http-01-port", "80", "--non-interactive", "--agree-tos", *contact,
          "--config-dir", base / "config", "--work-dir", base / "work", "--logs-dir", base / "logs",
          "--server", "https://acme-v02.api.letsencrypt.org/directory", "--cert-name", n["id"],
          "--keep-until-expiring", "-d", domain], timeout=240)

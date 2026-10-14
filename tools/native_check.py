@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 from nodepilot_pkg.certificates import prepare
 from nodepilot_pkg.common import atomic_json, private_dir
 from nodepilot_pkg.config import generate
+from nodepilot_pkg.caddy import configuration
 from nodepilot_pkg.cores import Cores
 from nodepilot_pkg.model import new_node
 
@@ -22,7 +23,7 @@ def main():
     args = p.parse_args()
     cores = Cores(ROOT / ".test-tools/cores")
     if args.download:
-        for core in ("xray", "sing-box"):
+        for core in ("xray", "sing-box", "caddy"):
             destination = cores.stage(core)
             cores.switch(core, destination)
             print(core, json.loads((destination / "verified.json").read_text())["version"], "SHA-256/ELF/version OK")
@@ -48,6 +49,25 @@ def main():
             atomic_json(config, generate(n))
             cores.check(n, config)
             print(protocol, "official native config check OK")
+        n = new_node("reality", "self target check", "8.8.8.8", port=14443, sni="example.com")
+        n["reality"] = dict(private_key=private, public_key=public, uuid=str(uuid.uuid4()),
+                            target="127.0.0.1:18003", server_names=[n["sni"]], short_id=secrets.token_hex(8),
+                            fingerprint="chrome", mode="self")
+        holder = {"sni": n["sni"], "tls": dict(mode="selfsigned", certificate="/nonexistent", key="/nonexistent")}
+        prepare(holder, private_dir(base / "caddy-cert"))
+        n["caddy"] = dict(domain=n["sni"], port=18003, certificate_mode="import", upstream="",
+                          certificate=holder["tls"]["certificate"], key=holder["tls"]["key"])
+        from nodepilot_pkg.common import run
+        for mode in ("import", "acme"):
+            n["caddy"]["certificate_mode"] = mode
+            config = base / ("caddy-" + mode + ".json")
+            atomic_json(config, configuration([n], base))
+            run([cores.binary("caddy"), "validate", "--config", config])
+            print("caddy", mode, "official native config check OK")
+        config = base / "self-reality.json"
+        atomic_json(config, generate(n))
+        cores.check(n, config)
+        print("self-reality", "official native config check OK")
     print("配置检查通过；未执行公网连接或 256MiB 负载测试。")
 
 

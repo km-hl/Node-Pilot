@@ -17,6 +17,8 @@ def main(argv=None):
     commands.add_parser("menu", help="SSH 交互管理菜单（默认）")
     commands.add_parser("self-check", help="离线检查管理器是否能正常导入")
     commands.add_parser("renew", help="续期本项目 ACME 证书（由独立 timer 调用）")
+    p = commands.add_parser("targets", help="在本 VPS 实测并筛选非 Cloudflare Reality 目标")
+    p.add_argument("--domains", help="逗号分隔的 1–12 个候选域名；默认内置候选")
     p = commands.add_parser("render", help="离线生成服务端配置；不声称内核已验证")
     p.add_argument("metadata", type=Path)
     p.add_argument("--output", type=Path, required=True)
@@ -33,6 +35,13 @@ def main(argv=None):
         elif args.command == "self-check":
             from . import manager, menu, installation, project_update, deploy
             print(f"NodePilot {__version__} 管理器导入检查通过。")
+        elif args.command == "targets":
+            from .targets import rank_targets
+            ranked = rank_targets(args.domains.split(",") if args.domains else None, print)
+            if not ranked:
+                raise PilotError("没有通过检查的目标；请更换候选域名。")
+            for index, item in enumerate(ranked, 1):
+                print(f"{index}. {item['sni']}  {item['median_ms']} ms；仍需真实 Reality 客户端验证。")
         elif args.command == "renew":
             from .certificates import due
             from .manager import Manager

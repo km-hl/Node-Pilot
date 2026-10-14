@@ -33,9 +33,9 @@ def extract_core(archive, output, core):
                 shutil.copyfileobj(src, dst, 256 * 1024)
     else:
         with tarfile.open(archive, "r:gz") as t:
-            entries = [m for m in t if m.name.endswith("/sing-box") and m.isfile()]
+            entries = [m for m in t if (m.name == core or m.name.endswith("/" + core)) and m.isfile()]
             if len(entries) != 1 or entries[0].size > 180 * 1024 * 1024:
-                raise PilotError("sing-box 附件中缺少唯一、合理大小的内核。")
+                raise PilotError(f"{core} 附件中缺少唯一、合理大小的内核。")
             with t.extractfile(entries[0]) as src, Path(output).open("wb") as dst:
                 shutil.copyfileobj(src, dst, 256 * 1024)
 
@@ -45,7 +45,7 @@ class Cores:
         self.root = Path(root)
 
     def binary(self, core):
-        if core not in {"xray", "sing-box"}:
+        if core not in {"xray", "sing-box", "caddy"}:
             raise PilotError("非法内核。")
         path = self.root / core / "current" / core
         if not path.is_file() or not (path.parent / "verified.json").is_file():
@@ -53,15 +53,20 @@ class Cores:
         return path
 
     def stage(self, core):
+        if core not in {"xray", "sing-box", "caddy"}:
+            raise PilotError("非法内核。")
         arch = architecture()
         parent = private_dir(self.root / core)
-        repo = "XTLS/Xray-core" if core == "xray" else "SagerNet/sing-box"
+        repo = {"xray": "XTLS/Xray-core", "sing-box": "SagerNet/sing-box", "caddy": "caddyserver/caddy"}[core]
         with tempfile.TemporaryDirectory(prefix="download-", dir=parent) as tmp:
             release = github_release(repo, tmp)
             version = release["tag_name"].lstrip("v")
             if core == "sing-box" and tuple(map(int, version.split("."))) < (1, 12, 0):
                 raise PilotError("AnyTLS 需要 sing-box >= 1.12.0。")
+            if core == "caddy" and tuple(map(int, version.split("."))) < (2, 7, 0):
+                raise PilotError("Reality 本机目标需要 Caddy >= 2.7.0 的内置 PROXY wrapper。")
             name = (f"Xray-linux-{'64' if arch == 'amd64' else 'arm64-v8a'}.zip" if core == "xray"
+                    else f"caddy_{version}_linux_{arch}.tar.gz" if core == "caddy"
                     else f"sing-box-{version}-linux-{arch}.tar.gz")
             assets = [a for a in release["assets"] if a["name"] == name]
             if len(assets) != 1:
