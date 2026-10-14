@@ -22,6 +22,9 @@ Debian 13、amd64、1 CPU、约 2GiB RAM；已有 x-ui 与其自带 Xray，已�
 | 备份恢复 | 删除本次测试节点，恢复到空节点集，TLS证书按导入模式恢复；再次外网传输和HTTPS通过 |
 | 单节点删除 | 清理时逐个删除本次节点并检查其余节点仍active；未删除或停止其他服务 |
 | 本地完整测试 | 新增实际Git暂存blob隐私检查、客户端不含服务端私钥、面板自带内核只读检测等，当前50项 Linux 单测通过 |
+| GitHub 入口升级 | 从真实 raw main 安装入口运行 --upgrade，原有三节点保持active，升级后再次通过三协议传输和HTTPS |
+| GitHub 入口新安装 | 删除本次测试节点并仅卸载本次创建的 NodePilot，保留私有备份；从真实单条命令重新安装，校验Release包并自动进入菜单 |
+| 原服务保护 | 原x-ui主进程PID及原Xray配置SHA-256保持一致；SQLite运行库会因原软件统计而动态变化，未由NodePilot改写 |
 
 ## Reality 目标站点观察
 
@@ -50,6 +53,8 @@ Debian 13、amd64、1 CPU、约 2GiB RAM；已有 x-ui 与其自带 Xray，已�
 上传使用公共源码允许清单；AGENTS.md、私有SSH会话工具、主机记录、测试配置/日志、证书、数据库、备份、下载内核和客户端URI均不提交。检查实际 Git 暂存 blob / HEAD，不用工作区副本冒充上传内容；额外隐式输入本次会话凭据与私有地址精确扫描，结果不打印秘密。
 
 Release包只包含与Git HEAD逐字节一致的管理器文件；单独验证包SHA-256、源码/附件安装器一致性和绑定URL。提交使用GitHub noreply身份，避免公开个人邮箱。公开源码、CI和附件结果以实际仓库状态为准。
+
+实际已发布 [v0.1.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.1.0)，仅含 install.sh、管理器tar.gz和SHA-256文件三个附件。首次 [GitHub CI](https://github.com/km-hl/Node-Pilot/actions/runs/38506642885) 已成功完成隐私审查、50项单测、shellcheck、官方内核检查及可复现打包。最终VPS保留管理器与私有备份，当前无测试节点，内核将在选择协议时按需安装。
 
 ## 仍待验证
 

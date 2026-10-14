@@ -4,7 +4,7 @@
 
 **当前状态：三协议已在 Debian 13 真实 VPS 上通过外网数据传输、HTTPS、生命周期及受限资源短测。** TLS 使用明确标记的测试自签名证书并在客户端导入信任，未关闭验证；ACME 实际签发、完整 256MiB 实机长测及 GUI 客户端矩阵仍待验证。详见 [真实 VPS 测试报告](docs/VPS_TEST_REPORT.md)、[本地记录](docs/VALIDATION.md) 和 [验收清单](docs/VPS_ACCEPTANCE.md)。
 
-仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)。发布后的一键入口：
+仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，首版 [v0.1.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.1.0) 已发布。一键入口已在真实 VPS 回测：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/km-hl/Node-Pilot/main/install.sh)
