@@ -15,7 +15,7 @@ from nodepilot_pkg.installation import uninstall
 from nodepilot_pkg.manager import Manager
 
 
-def tty_command(command, replies=("0",), timeout=120, cwd=ROOT):
+def tty_command(command, replies=("0",), timeout=120, cwd=ROOT, expect_code=0):
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(cwd)
@@ -40,7 +40,7 @@ def tty_command(command, replies=("0",), timeout=120, cwd=ROOT):
             result, status = os.waitpid(pid, os.WNOHANG)
             if result:
                 completed = True
-                if os.waitstatus_to_exitcode(status) != 0:
+                if os.waitstatus_to_exitcode(status) != expect_code:
                     raise AssertionError(received.decode(errors="replace"))
                 break
         if not completed:
@@ -48,7 +48,7 @@ def tty_command(command, replies=("0",), timeout=120, cwd=ROOT):
                 raise AssertionError("安装菜单测试超时")
             _, status = os.waitpid(pid, 0)
             completed = True
-            assert os.waitstatus_to_exitcode(status) == 0, received.decode(errors="replace")
+            assert os.waitstatus_to_exitcode(status) == expect_code, received.decode(errors="replace")
         assert sent == len(replies), received.decode(errors="replace")
         return received.decode(errors="replace")
     finally:

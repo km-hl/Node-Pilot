@@ -48,12 +48,13 @@ def main(argv=None):
             from .system import supported
             supported()
             manager = Manager()
-            with manager.locked():
+            with manager.locked(migrate_owner=False):
                 from .deploy import recover_program
                 recover_program(manager=manager)
                 from .installation import recover_uninstall
                 if recover_uninstall(manager):
                     return 0
+                manager.initialize()
                 manager.recover_core()
                 manager.recover()
                 from .adoption import Adoptions

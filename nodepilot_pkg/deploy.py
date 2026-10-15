@@ -14,6 +14,8 @@ from .system import supported
 
 UNITS = {'nodepilot-renew.service': RENEW_SERVICE, TIMER: RENEW_TIMER}
 PHASES = {'preparing', 'installing', 'rolling_back', 'complete'}
+REQUIRED = {'nodepilot', *('nodepilot_pkg/' + name + '.py'
+                         for name in ('__init__', 'cli', 'deploy', 'manager', 'installation'))}
 
 
 def assert_program_owned(root, launcher, units):
@@ -115,7 +117,7 @@ def validate_record(record, root, launcher, units, manager):
         raise PilotError('事务缺少完整目标 SHA-256。')
 
 
-def verify_candidate(destination, expected=None):
+def verify_candidate(destination, expected=None, expected_version=None):
     if destination.is_symlink() or not destination.is_dir():
         raise PilotError('程序候选目录缺失/越界，保留事务。')
     preflight_program(destination.parent.parent)
@@ -126,6 +128,8 @@ def verify_candidate(destination, expected=None):
     if not isinstance(manifest, dict) or not isinstance(manifest.get('files'), list) or any(not isinstance(n, str) for n in manifest['files']):
         raise PilotError('候选清单格式无效；保留事务。')
     hashes = manifest.get('hashes')
+    if isinstance(hashes, dict) and not REQUIRED <= set(hashes):
+        raise PilotError('程序候选文件校验失败：缺少必要管理器文件；保留事务。')
     if (manifest.get('schema') != 1 or manifest.get('recovery_schema') != 2
             or not isinstance(hashes, dict) or set(hashes) != set(manifest.get('files', []))
             or 'nodepilot' not in hashes or (expected is not None and hashes != expected)
@@ -139,7 +143,18 @@ def verify_candidate(destination, expected=None):
         path = destination / name
         if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
             raise PilotError('程序候选文件校验失败，保留事务并拒绝执行。')
+    if expected_version is not None and version(destination) != expected_version:
+        raise PilotError('候选程序版本与事务记录不匹配；保留事务。')
     return hashes
+
+
+def assert_old_revision(app, name, expected_version=None):
+    if name is not None:
+        old = app / name
+        if old.is_symlink() or not old.is_dir() or not (old / 'nodepilot').is_file() or (old / 'nodepilot').is_symlink() or (old / 'nodepilot_pkg').is_symlink():
+            raise PilotError('原程序修订缺失或为外部链接；保留事务。')
+        if expected_version is not None and version(old) != expected_version:
+            raise PilotError('原程序版本与事务记录不匹配；保留事务。')
 
 
 def point(app, name):
@@ -208,10 +223,13 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
         raise PilotError('程序事务为外部链接。')
     if not journal.exists():
         return False
+    if not journal.is_file() or journal.stat().st_size > 256 * 1024:
+        raise PilotError('程序事务不是有界普通文件；保留证据并拒绝读取。')
     assert_program_owned(root, launcher, units)
     record = read_json(journal)
     validate_record(record, root, launcher, units, manager)
     app = root / 'app'
+    assert_old_revision(app, record['old'], record.get('old_version'))
     current = app / 'current'
     if (current.exists() and not current.is_symlink()) or (current.is_symlink() and (
             current.resolve().parent != app.resolve() or current.resolve().name not in {record['destination'], record.get('old')})):
@@ -236,7 +254,7 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
         rollback_program(record, root, launcher, units, manager)
         return True
     # Reject corruption without rollback/deletion, preserving forensic evidence.
-    verify_candidate(destination, record['hashes'])
+    verify_candidate(destination, record['hashes'], record.get('target_version'))
     try:
         run(['python3', destination / 'nodepilot', 'self-check'])
         point(app, destination.name)
@@ -294,6 +312,21 @@ def deploy(source, digest, source_url='', root=Path('/opt/nodepilot'), launcher=
             raise PilotError('程序旧修订越界/缺失。')
         if current.exists() and not current.is_symlink():
             raise PilotError('拒绝覆盖非符号链接的程序 current。')
+        assert_old_revision(root / 'app', old.name if old else None)
+        source = Path(source)
+        files = sorted(p.relative_to(source).as_posix() for p in source.rglob('*')
+                       if p.is_file() and (p.name == 'nodepilot' or p.suffix == '.py'))
+        if any(p.is_symlink() for p in source.rglob('*')) or source.is_symlink():
+            raise PilotError('候选源码含外部链接。')
+        hashes = {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in files}
+        # Recovery may already have installed this exact verified payload. Do
+        # not create another transaction/backup or reload/restart units on retry.
+        if old and old.name == digest.lower():
+            verify_candidate(old, hashes)
+            if (text_or_none(launcher) == LAUNCHER and text_or_none(root / '.owner') == OWNER
+                    and text_or_none(manager.state / '.owner') == OWNER
+                    and all(text_or_none(units / name) == content for name, content in UNITS.items())):
+                return
         previous = snapshot(root, launcher, units, manager, old.name if old else None)
         backup = manager.backup()
         private_dir(root)
@@ -302,11 +335,6 @@ def deploy(source, digest, source_url='', root=Path('/opt/nodepilot'), launcher=
         private_dir(root / 'cores')
         app = private_dir(root / 'app')
         destination = app / digest.lower()
-        source = Path(source)
-        files = sorted(p.relative_to(source).as_posix() for p in source.rglob('*')
-                       if p.is_file() and (p.name == 'nodepilot' or p.suffix == '.py'))
-        if any(p.is_symlink() for p in source.rglob('*')) or source.is_symlink():
-            raise PilotError('候选源码含外部链接。')
         from urllib.parse import urlsplit
         url = urlsplit(source_url)
         match = re.fullmatch(r'/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/releases/download/[^/]+/[^/]+', url.path)
@@ -316,7 +344,7 @@ def deploy(source, digest, source_url='', root=Path('/opt/nodepilot'), launcher=
                   'old_version': version(old) if old else None, 'target_version': version(source),
                   'backup': str(backup), 'previous': previous,
                   'repository': match[1] if url.scheme == 'https' and url.hostname == 'github.com' and match else '',
-                  'hashes': {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in files}}
+                  'hashes': hashes}
         validate_record(record, root, launcher, units, manager)
         journal = root / 'program-pending.json'
         atomic_json(journal, record)

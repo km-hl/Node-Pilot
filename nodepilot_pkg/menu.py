@@ -544,13 +544,14 @@ class Menu:
         raise EOFError()
 
     def start(self):
-        with self.manager.locked():
+        with self.manager.locked(migrate_owner=False):
             from .deploy import recover_program
             recover_program(manager=self.manager)
             from .installation import recover_uninstall
             if recover_uninstall(self.manager):
                 self.say("已完成中断的卸载；私有备份保留。")
                 return 0
+            self.manager.initialize()
             self.manager.recover_core()
             self.manager.recover()
             from .adoption import Adoptions

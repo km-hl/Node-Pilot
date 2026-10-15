@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 PAYLOAD_URL='https://github.com/km-hl/Node-Pilot/releases/download/v0.4.0/nodepilot-0.4.0.tar.gz'
-PAYLOAD_SHA256='77d074b9c53e09fcce92611af0ee36c1518d3e4d96a7d020a298237bfd034ace'
+PAYLOAD_SHA256='a01624010026f3689b3525f8571970eca93dfaa0ef6e99350f4954d45fcdfc00'
 LOCAL=0
 UPGRADE=0
 for arg in "$@"; do
@@ -28,6 +28,16 @@ case "$(uname -m)" in x86_64|aarch64) ;; *) fail '仅支持 amd64/arm64。' ;; e
 [[ -d /run/systemd/system ]] || fail '需要正在运行的 systemd。'
 [[ -r /dev/tty && -w /dev/tty ]] || fail '需要 SSH 交互 TTY（ssh -t）。'
 exec 3<>/dev/tty || fail '无法打开 /dev/tty。'
+
+# Presence is only a reason to refuse the shortcut, never proof of validity.
+# Recovery belongs to the SHA-256-verified payload below, not an old manager.
+# Keep program-pending-rc2.json (historical evidence) out of this decision.
+if [[ $UPGRADE -eq 0 && ( -e /opt/nodepilot/program-pending.json || -L /opt/nodepilot/program-pending.json ) ]]; then
+    fail '检测到可能未完成或异常的 Node-Pilot 程序升级事务，尚未确认其有效性。
+已停止进入旧版管理菜单；请从可信 Node-Pilot RC4 或更新源码目录执行：
+sudo bash install.sh --local --upgrade
+原配置和事务记录未被主动删除。'
+fi
 
 if [[ -e /usr/local/bin/nodepilot && $UPGRADE -eq 0 ]]; then
     [[ -f /opt/nodepilot/.owner && ! -L /opt/nodepilot/.owner && ! -L /opt/nodepilot ]] || fail '现有同名程序不属于 NodePilot。'

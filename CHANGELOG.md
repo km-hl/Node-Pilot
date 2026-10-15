@@ -2,6 +2,13 @@
 
 ## 0.4.0 — 候选，尚未稳定发布
 
+RC4 增量：
+
+- 安装器所有非升级入口在进入旧菜单前检查活动 program-pending.json，包括损坏、目录、正常/悬空符号链接；保守拒绝并指引可信新版 --local --upgrade，不将文件存在视为有效事务。历史 program-pending-rc2.json 不阻止正常启动。
+- 重用已校验 payload 的恢复状态机；恢复后若目标包已完整安装，重复升级不再创建备份、重写单元或改变 timer。旧修订缺失/入口或包目录链接、必要候选模块缺失、记录与实际版本不符均拒绝并保留证据；日志限定为普通文件及 256KiB。
+- 菜单与续期入口先在锁内验证/恢复事务，再迁移 owner，避免拒绝异常事务前改变原标记。未追溯修改已安装的旧 v0.3 入口，遇到新事务仍需可信新版安装器。
+- 新增安装器真实 Bash 隔离回归与可销毁 Linux PTY/systemd 验收：v0.3/RC1/RC2/RC3 到 RC4、准备/切换中断、异常日志拒绝、重复恢复和历史证据放行。详见 [RC4 验证报告](docs/RC_FOUR_VALIDATION.md)。DNS-01 真实签发及续期仍等待授权测试环境，保持草稿候选。
+
 RC3 增量：
 
 - 升级分别保存并恢复续期 timer 的 UnitFileState / ActiveState；保留 enabled-runtime、disabled + active 和 enabled + inactive，首次安装才默认启用并启动。拒绝 masked、未知/转换状态、外部 FragmentPath 和 drop-in。

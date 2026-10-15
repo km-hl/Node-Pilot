@@ -17,6 +17,18 @@ from test_config import fixture
 from test_manager import FakeCores, FakeServices
 
 
+def candidate_at(path):
+    """Synthetic importable layout; execution is mocked in transaction unit tests."""
+    from nodepilot_pkg.deploy import REQUIRED
+    path.mkdir(parents=True, exist_ok=True)
+    hashes={}
+    for name in sorted(REQUIRED):
+        target=path/name;target.parent.mkdir(parents=True,exist_ok=True)
+        data=b'candidate' if name=='nodepilot' else b'# synthetic test module\n'
+        target.write_bytes(data);hashes[name]=hashlib.sha256(data).hexdigest()
+    return hashes
+
+
 class TimerSystemd:
     """Stateful simulator with real temporary symlinks, NOT real systemd."""
     def __init__(self, base, units, enabled='disabled', active='inactive'):
@@ -318,7 +330,7 @@ class ProgramRecoveryTests(unittest.TestCase):
                 (units/name).write_text(text)
             service_units=base/'service-units';m=Manager(base/'state',FakeCores(),FakeServices(service_units),migrate_owner=False)
             m.initialize();(m.state/'.owner').write_text(LEGACY_OWNER)
-            source=base/'payload';source.mkdir();(source/'nodepilot').write_text('candidate')
+            source=base/'payload';candidate_at(source)
             systemd=TimerSystemd(base,units,'enabled-runtime','active')
             calls=systemd.calls;failed=False
             def command(args,**kwargs):
@@ -348,10 +360,10 @@ class ProgramRecoveryTests(unittest.TestCase):
                 base=Path(d);root=base/'program';app=root/'app';app.mkdir(parents=True)
                 units=base/'units';units.mkdir();launcher=base/'nodepilot'
                 (root/'.owner').write_text(LEGACY_OWNER)
-                old=app/('a'*64);old.mkdir();(old/'files.json').write_text('{"schema":1,"files":[]}')
-                new=app/('b'*64);new.mkdir();(new/'nodepilot').write_text('candidate')
-                atomic_json(new/'files.json',{'schema':1,'recovery_schema':2,'files':['nodepilot'],
-                    'hashes':{'nodepilot':hashlib.sha256(b'candidate').hexdigest()}})
+                old=app/('a'*64);old.mkdir();(old/'nodepilot').write_text('old')
+                (old/'files.json').write_text('{"schema":1,"files":["nodepilot"]}')
+                new=app/('b'*64);hashes=candidate_at(new)
+                atomic_json(new/'files.json',{'schema':1,'recovery_schema':2,'files':list(hashes),'hashes':hashes})
                 current=app/'current';current.symlink_to(old.name,target_is_directory=True)
                 record={'schema':2,'phase':'installing','root':str(root),'launcher':str(launcher),'units':str(units),
                         'destination':new.name,'old':old.name,'repository':''}
@@ -421,7 +433,7 @@ class ProgramRC3Tests(unittest.TestCase):
         m=Manager(base/'state',FakeCores(),FakeServices(base/'service-units'),migrate_owner=False)
         m.initialize(); (m.state/'.owner').write_text(LEGACY_OWNER)
         sentinel=m.state/'user-config';sentinel.write_text('preserved')
-        source=base/'source';source.mkdir();(source/'nodepilot').write_text('candidate')
+        source=base/'source';candidate_at(source)
         sd=TimerSystemd(base,units,enabled,active)
         return root,launcher,units,m,source,sd
 

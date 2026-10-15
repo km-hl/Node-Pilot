@@ -169,7 +169,7 @@ def main():
             print('first install failure removes units and both link scopes real systemd OK', flush=True)
         finally:cleanup()
         for installer in ([] if args.first_only else args.legacy_source or [ROOT]):
-            label = run(['python3', installer.resolve() / 'nodepilot', '--version'])
+            label = run(['python3', installer.resolve() / 'nodepilot', '--version']) + ' (' + installer.name + ')'
             matrix(installer.resolve(), payload, digest, label)
     print('all temporary installation paths and timer links cleaned', flush=True)
 
