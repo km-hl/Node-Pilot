@@ -27,6 +27,33 @@ WantedBy=timers.target
 """
 RENEW_TIMER = LEGACY_RENEW_TIMER.replace('OnCalendar=', 'OnBootSec=2min\nOnCalendar=', 1)
 LAUNCHER = "#!/usr/bin/env bash\n# NodePilot owned launcher schema=1\nexec python3 /opt/nodepilot/app/current/nodepilot \"$@\"\n"
+TIMER = 'nodepilot-renew.timer'
+
+
+def timer_state(command=run):
+    """Enablement and runtime state are independent; refuse ambiguous transitions."""
+    enabled = command(['systemctl', 'show', TIMER, '-p', 'UnitFileState', '--value'])
+    active = command(['systemctl', 'show', TIMER, '-p', 'ActiveState', '--value'])
+    if enabled not in {'enabled', 'enabled-runtime', 'disabled'} or active not in {'active', 'inactive'}:
+        raise PilotError('续期 timer 被屏蔽、状态未知或正在转换；请先检查 systemctl 状态，未更改启用策略。')
+    return {'unit_file_state': enabled, 'active_state': active}
+
+
+def restore_timer(state, command=run):
+    """Converge without restarting an already active timer or changing its policy."""
+    observed = timer_state(command)
+    desired = state['unit_file_state']
+    if observed['unit_file_state'] != desired:
+        # Clear each configuration scope explicitly; --runtime is also vital
+        # when recreating runtime enablement. Never couple enablement with --now.
+        command(['systemctl', 'disable', TIMER])
+        command(['systemctl', 'disable', '--runtime', TIMER])
+        if desired != 'disabled':
+            command(['systemctl', 'enable', *(['--runtime'] if desired == 'enabled-runtime' else []), TIMER])
+    if observed['active_state'] != state['active_state']:
+        command(['systemctl', 'start' if state['active_state'] == 'active' else 'stop', TIMER])
+    if timer_state(command) != state:
+        raise PilotError('续期 timer 状态恢复未完成；保留程序事务以供重试。')
 
 
 def owned_unit(text, expected):
@@ -164,6 +191,7 @@ def uninstall(manager, root=Path("/opt/nodepilot"), launcher=Path("/usr/local/bi
         manager.caddy.sync([])
         if record["renew"]["nodepilot-renew.timer"]:
             run(["systemctl", "disable", "--now", "nodepilot-renew.timer"])
+            run(["systemctl", "disable", "--runtime", "nodepilot-renew.timer"])
         for name in record["renew"]:
             (units / name).unlink(missing_ok=True)
         run(["systemctl", "daemon-reload"])
@@ -207,6 +235,7 @@ def finish_uninstall(manager, record):
                 raise PilotError("最终清理遇到外部 drop-in。")
             if name.endswith("timer"):
                 run(["systemctl", "disable", "--now", name])
+                run(["systemctl", "disable", "--runtime", name])
             path.unlink()
     run(["systemctl", "daemon-reload"])
     if launcher.is_symlink() or (launcher.exists() and launcher.read_text() != LAUNCHER):

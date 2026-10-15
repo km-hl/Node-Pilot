@@ -1,6 +1,6 @@
 # NodePilot
 
-当前为 **v0.4.0 RC2 候选**，PR 保持草稿；[RC2 验证报告](docs/RC_TWO_VALIDATION.md) 区分本轮、历史和未完成验收。不建议现在合并或发布稳定版。
+当前为 **v0.4.0 RC3 候选**，PR 保持草稿；[RC3 验证报告](docs/RC_THREE_VALIDATION.md) 记录升级事务与真实 systemd 状态矩阵，[RC2 报告](docs/RC_TWO_VALIDATION.md) 保留此前证据与未完成验收。不建议现在合并或发布稳定版。
 
 轻量 VPS 节点搭建与管理工具，当前源码 `0.4.0` 候选。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
 

@@ -29,20 +29,23 @@ class Manager:
         self.caddy = caddy or Caddy(self.state, self.cores, self.services.units)
         self.migrate_owner = migrate_owner
 
-    def initialize(self):
+    def initialize(self, migrate_owner=None):
         marker = self.state / ".owner"
         if self.state.exists() and (self.state.is_symlink() or marker.is_symlink() or not marker.is_file() or marker.read_text() not in {OWNER, LEGACY_OWNER}):
             raise PilotError("配置目录已有非 NodePilot 内容；拒绝接管/覆盖。")
         private_dir(self.state)
-        marker_content = marker.read_text() if marker.is_file() and not self.migrate_owner else OWNER
-        atomic_bytes(marker, marker_content.encode())
+        migrate = self.migrate_owner if migrate_owner is None else migrate_owner
+        # Existing markers must not be rewritten before flock: a contender could
+        # otherwise publish a stale schema=1 after an upgrade writes schema=2.
+        if not marker.is_file() or migrate:
+            atomic_bytes(marker, OWNER.encode())
         for directory in ("nodes", "backups", "acme"):
             private_dir(self.state / directory)
 
     @contextmanager
-    def locked(self):
+    def locked(self, migrate_owner=None):
         import fcntl
-        self.initialize()
+        self.initialize(migrate_owner=False)
         lock = self.state / ".lock"
         with lock.open("a") as f:
             lock.chmod(0o600)
@@ -51,6 +54,9 @@ class Manager:
             except BlockingIOError as e:
                 raise PilotError("另一个 NodePilot 操作正在运行，请稍后重试。") from e
             try:
+                migrate = self.migrate_owner if migrate_owner is None else migrate_owner
+                if migrate:
+                    atomic_bytes(self.state / '.owner', OWNER.encode())
                 yield
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)

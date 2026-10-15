@@ -2,6 +2,14 @@
 
 ## 0.4.0 — 候选，尚未稳定发布
 
+RC3 增量：
+
+- 升级分别保存并恢复续期 timer 的 UnitFileState / ActiveState；保留 enabled-runtime、disabled + active 和 enabled + inactive，首次安装才默认启用并启动。拒绝 masked、未知/转换状态、外部 FragmentPath 和 drop-in。
+- 程序文件复制前持久化原修订/版本、launcher、原单元字节、timer 状态、owner、源配置、目标文件 SHA-256 及阶段。回滚失败保留 rolling_back 事务，重试继续回滚；候选或事务损坏时保留证据、拒绝执行。
+- 兼容 RC2 的合法旧日志，保留原始证据和恢复时可观察到的 timer 策略；旧日志没有记录的升级前状态无法事后还原。
+- owner 迁移移到获取状态锁后；候选首次执行前校验完整文件清单，已有同摘要目录也必须匹配已验证 payload。卸载显式清理 runtime timer 链接。
+- 新增六状态成功/失败/中断矩阵、准备阶段与 timer 操作中断、安全拒绝回归，以及可销毁环境真实 systemd smoke 脚本。详见 [RC3 验证与限制](docs/RC_THREE_VALIDATION.md)。
+
 RC2 增量：
 
 - Caddy 显式分离 tcp4/tcp6，校验监听 PID 与地址族；Certbot standalone 双栈明确拒绝并提示 DNS-01，不依赖 IPv6 通配覆盖 IPv4。

@@ -17,6 +17,48 @@ from test_config import fixture
 from test_manager import FakeCores, FakeServices
 
 
+class TimerSystemd:
+    """Stateful simulator with real temporary symlinks, NOT real systemd."""
+    def __init__(self, base, units, enabled='disabled', active='inactive'):
+        self.base, self.units = base, units
+        self.active = active
+        self.calls = []
+        self.links = {state: base / state / 'timers.target.wants/nodepilot-renew.timer'
+                      for state in ('enabled', 'enabled-runtime')}
+        if enabled != 'disabled':
+            self.enable(enabled)
+
+    def enable(self, state):
+        path = self.links[state]; path.parent.mkdir(parents=True, exist_ok=True)
+        path.symlink_to(self.units / 'nodepilot-renew.timer')
+
+    def state(self):
+        enabled = next((s for s, p in self.links.items() if p.is_symlink()), 'disabled')
+        return {'unit_file_state': enabled, 'active_state': self.active}
+
+    def __call__(self, args, **kwargs):
+        args = list(map(str, args)); self.calls.append(args)
+        if args[0] != 'systemctl':
+            return ''
+        if args[1] == 'show':
+            prop = args[4]
+            if prop == 'UnitFileState': return self.state()['unit_file_state']
+            if prop == 'ActiveState': return self.active
+            if prop == 'FragmentPath':
+                path = self.units / args[2]
+                return str(path) if path.exists() else ''
+            return ''
+        if args[1] in {'enable', 'disable', 'start', 'stop'}:
+            assert args[-1] == 'nodepilot-renew.timer', 'external service touched'
+        if args[1] == 'disable':
+            self.links['enabled-runtime' if '--runtime' in args else 'enabled'].unlink(missing_ok=True)
+        elif args[1] == 'enable':
+            self.enable('enabled-runtime' if '--runtime' in args else 'enabled')
+        elif args[1] in {'start', 'stop'}:
+            self.active = 'active' if args[1] == 'start' else 'inactive'
+        return ''
+
+
 class HttpRC2Tests(unittest.TestCase):
     @unittest.skipUnless(Path('/proc/net/tcp').exists(),'Linux sockets')
     def test_owned_ipv4_wildcard_cannot_prove_ipv6_listener(self):
@@ -277,15 +319,17 @@ class ProgramRecoveryTests(unittest.TestCase):
             service_units=base/'service-units';m=Manager(base/'state',FakeCores(),FakeServices(service_units),migrate_owner=False)
             m.initialize();(m.state/'.owner').write_text(LEGACY_OWNER)
             source=base/'payload';source.mkdir();(source/'nodepilot').write_text('candidate')
-            calls=[];failed=False
+            systemd=TimerSystemd(base,units,'enabled-runtime','active')
+            calls=systemd.calls;failed=False
             def command(args,**kwargs):
                 nonlocal failed
-                args=list(map(str,args));calls.append(args)
-                if args[:2]==['systemctl','show']:
-                    return 'enabled-runtime' if 'UnitFileState' in args else ('active' if 'ActiveState' in args else '')
+                args=list(map(str,args))
                 if args[0]=='python3' and ('b'*64) in args[1] and (app/'current').resolve().name=='b'*64 and not failed:
+                    # Exercise convergence from a partially changed enablement.
+                    for path in systemd.links.values():path.unlink(missing_ok=True)
+                    systemd.enable('enabled')
                     failed=True;raise PilotError('injected installed self-check failure')
-                return ''
+                return systemd(args,**kwargs)
             with patch('nodepilot_pkg.deploy.supported'),patch('nodepilot_pkg.deploy.run',side_effect=command),self.assertRaises(PilotError):
                 deploy(source,'b'*64,root=root,launcher=launcher,units=units,manager=m)
             self.assertEqual((app/'current').resolve(),old)
@@ -293,6 +337,7 @@ class ProgramRecoveryTests(unittest.TestCase):
             self.assertEqual((m.state/'.owner').read_text(),LEGACY_OWNER)
             self.assertEqual((units/'nodepilot-renew.timer').read_text(),LEGACY_RENEW_TIMER)
             self.assertIn(['systemctl','enable','--runtime','nodepilot-renew.timer'],calls)
+            self.assertEqual(systemd.state(),{'unit_file_state':'enabled-runtime','active_state':'active'})
             self.assertFalse((root/'program-pending.json').exists())
 
     def test_durable_upgrade_finishes_after_each_interruption_and_is_idempotent(self):
@@ -317,7 +362,7 @@ class ProgramRecoveryTests(unittest.TestCase):
                     if (crash=='launcher' and path==launcher) or (crash=='timer' and path.name.endswith('.timer')):
                         raise SystemExit('simulated power loss')
                     return original(path,data,**kwargs)
-                with patch('nodepilot_pkg.deploy.run',return_value=''):
+                with patch('nodepilot_pkg.deploy.run',side_effect=TimerSystemd(base,units)):
                     if crash=='switch':
                         with patch('nodepilot_pkg.deploy.os.replace',side_effect=SystemExit('power loss')),self.assertRaises(SystemExit):
                             recover_program(root,launcher,units)
@@ -354,6 +399,242 @@ class ProgramRecoveryTests(unittest.TestCase):
             with patch('nodepilot_pkg.deploy.run',return_value=''),self.assertRaises(PilotError):
                 recover_program(root,root/'nodepilot',root)
             self.assertTrue((root/'program-pending.json').exists())
+
+
+@unittest.skipUnless(os.name == 'posix', 'Linux upgrade transactions')
+class ProgramRC3Tests(unittest.TestCase):
+    states = [(e, a) for e in ('enabled', 'enabled-runtime', 'disabled') for a in ('active', 'inactive')]
+
+    def environment(self, base, enabled='disabled', active='inactive', first=False):
+        from nodepilot_pkg.installation import LAUNCHER, RENEW_SERVICE, LEGACY_RENEW_TIMER
+        root=base/'program'; app=root/'app'; app.mkdir(parents=True)
+        (root/'.owner').write_text(LEGACY_OWNER)
+        units=base/'units'; units.mkdir(); launcher=base/'nodepilot'
+        old=app/('a'*64)
+        if not first:
+            old.mkdir(); (old/'nodepilot').write_text('old')
+            atomic_json(old/'files.json',{'schema':1,'files':['nodepilot']})
+            (app/'current').symlink_to(old.name,target_is_directory=True)
+            launcher.write_text(LAUNCHER)
+            (units/'nodepilot-renew.service').write_text(RENEW_SERVICE)
+            (units/'nodepilot-renew.timer').write_text(LEGACY_RENEW_TIMER)
+        m=Manager(base/'state',FakeCores(),FakeServices(base/'service-units'),migrate_owner=False)
+        m.initialize(); (m.state/'.owner').write_text(LEGACY_OWNER)
+        sentinel=m.state/'user-config';sentinel.write_text('preserved')
+        source=base/'source';source.mkdir();(source/'nodepilot').write_text('candidate')
+        sd=TimerSystemd(base,units,enabled,active)
+        return root,launcher,units,m,source,sd
+
+    def install(self, env):
+        from nodepilot_pkg.deploy import deploy
+        root,launcher,units,m,source,sd=env
+        with patch('nodepilot_pkg.deploy.supported'),patch('nodepilot_pkg.deploy.run',side_effect=sd):
+            deploy(source,'b'*64,root=root,launcher=launcher,units=units,manager=m)
+
+    def recover(self, env):
+        from nodepilot_pkg.deploy import recover_program
+        root,launcher,units,m,source,sd=env
+        with m.locked(migrate_owner=False),patch('nodepilot_pkg.deploy.run',side_effect=sd):
+            result=recover_program(root,launcher,units,m)
+            self.assertFalse(recover_program(root,launcher,units,m))
+        return result
+
+    def assert_original(self,env,first=False):
+        from nodepilot_pkg.installation import LEGACY_RENEW_TIMER, LAUNCHER, RENEW_SERVICE
+        root,launcher,units,m,source,sd=env
+        self.assertEqual((m.state/'user-config').read_text(),'preserved')
+        self.assertEqual((root/'.owner').read_text(),LEGACY_OWNER)
+        self.assertEqual((m.state/'.owner').read_text(),LEGACY_OWNER)
+        self.assertFalse((root/'program-pending.json').exists())
+        if first:
+            self.assertFalse((root/'app/current').is_symlink())
+            self.assertFalse(launcher.exists());self.assertFalse(list(units.iterdir()))
+            self.assertFalse(any(p.is_symlink() for p in sd.links.values()))
+        else:
+            self.assertEqual((root/'app/current').resolve().name,'a'*64)
+            self.assertEqual(launcher.read_text(),LAUNCHER)
+            self.assertEqual((units/'nodepilot-renew.timer').read_text(),LEGACY_RENEW_TIMER)
+            self.assertEqual((units/'nodepilot-renew.service').read_text(),RENEW_SERVICE)
+
+    def test_success_all_six_timer_states_and_first_install(self):
+        for enabled,active in self.states+[(None,None)]:
+            with self.subTest(enabled=enabled,active=active),tempfile.TemporaryDirectory() as d:
+                first=enabled is None
+                env=self.environment(Path(d),enabled or 'disabled',active or 'inactive',first)
+                self.install(env)
+                self.assertEqual(env[-1].state(),{'unit_file_state':'enabled' if first else enabled,
+                                                 'active_state':'active' if first else active})
+                self.assertEqual((env[0]/'app/current').resolve().name,'b'*64)
+                self.assertEqual((env[3].state/'user-config').read_text(),'preserved')
+                self.assertFalse(self.recover(env))
+
+    def test_failed_self_check_restores_all_states_files_owners_and_symlinks(self):
+        for enabled,active in self.states+[(None,None)]:
+            with self.subTest(enabled=enabled,active=active),tempfile.TemporaryDirectory() as d:
+                first=enabled is None
+                env=self.environment(Path(d),enabled or 'disabled',active or 'inactive',first)
+                root,launcher,units,m,source,sd=env
+                original=sd.__call__
+                def failure(args,**kwargs):
+                    if str(args[0])=='python3' and (root/'app/current').is_symlink() and (root/'app/current').resolve().name=='b'*64:
+                        raise PilotError('installed self-check failed')
+                    return original(args,**kwargs)
+                with patch.object(TimerSystemd,'__call__',side_effect=failure),self.assertRaises(PilotError):
+                    self.install(env)
+                self.assertEqual(sd.state(),{'unit_file_state':enabled or 'disabled','active_state':active or 'inactive'})
+                self.assert_original(env,first)
+
+    def test_interrupt_every_durable_step_all_six_states_and_first_install(self):
+        from nodepilot_pkg import deploy
+        for enabled,active in self.states+[(None,None)]:
+            for step in ('intent','candidate','current','owners','launcher','units','reloaded','timer','checked'):
+                with self.subTest(enabled=enabled,active=active,step=step),tempfile.TemporaryDirectory() as d:
+                    first=enabled is None
+                    env=self.environment(Path(d),enabled or 'disabled',active or 'inactive',first)
+                    root,launcher,units,m,source,sd=env
+                    original=deploy.atomic_json
+                    def crash(path,record):
+                        original(path,record)
+                        if path.name=='program-pending.json' and record.get('step')==step:
+                            raise SystemExit('simulated process death')
+                    with patch('nodepilot_pkg.deploy.atomic_json',side_effect=crash),self.assertRaises(SystemExit):
+                        self.install(env)
+                    record=read_json(root/'program-pending.json')
+                    self.assertEqual(record['previous']['timer'],{'unit_file_state':enabled or 'disabled','active_state':active or 'inactive'})
+                    self.assertIn('nodepilot',record['hashes'])
+                    self.assertIn('old_version',record);self.assertIn('target_version',record)
+                    self.assertTrue(self.recover(env))
+                    if step=='intent':
+                        self.assert_original(env,first)
+                    else:
+                        self.assertEqual((root/'app/current').resolve().name,'b'*64)
+                        self.assertEqual(sd.state(),{'unit_file_state':'enabled' if first else enabled,'active_state':'active' if first else active})
+                    self.assertEqual((m.state/'user-config').read_text(),'preserved')
+
+    def test_interrupt_during_copy_and_after_destination_write(self):
+        from nodepilot_pkg import deploy
+        for boundary in ('copy','renamed'):
+            with self.subTest(boundary=boundary),tempfile.TemporaryDirectory() as d:
+                env=self.environment(Path(d));root=env[0]
+                if boundary=='copy':
+                    target='nodepilot_pkg.deploy.shutil.copytree'
+                    def crash(*args,**kwargs):raise SystemExit('copy interrupted')
+                else:
+                    target='nodepilot_pkg.deploy.os.replace';original=deploy.os.replace
+                    def crash(src,dst):
+                        original(src,dst)
+                        if Path(dst).name=='b'*64:raise SystemExit('rename interrupted')
+                with patch(target,side_effect=crash),self.assertRaises(SystemExit):self.install(env)
+                self.assertTrue(self.recover(env));self.assert_original(env)
+
+    def test_rollback_failure_keeps_journal_and_retry_finishes_rollback(self):
+        for crash in (PilotError('systemd unavailable'),SystemExit('power loss during rollback')):
+            with self.subTest(crash=type(crash)),tempfile.TemporaryDirectory() as d:
+                env=self.environment(Path(d),'disabled','active');root,launcher,units,m,source,sd=env
+                original=sd.__call__
+                def failure(args,**kwargs):
+                    if str(args[0])=='python3' and (root/'app/current').resolve().name=='b'*64:
+                        raise PilotError('self-check failed')
+                    journal=root/'program-pending.json'
+                    if list(args)==['systemctl','daemon-reload'] and journal.exists() and read_json(journal)['phase']=='rolling_back':
+                        raise crash
+                    return original(args,**kwargs)
+                with patch.object(TimerSystemd,'__call__',side_effect=failure),self.assertRaises(type(crash)):
+                    self.install(env)
+                self.assertEqual(read_json(root/'program-pending.json')['phase'],'rolling_back')
+                self.assertTrue(self.recover(env));self.assert_original(env)
+                self.assertEqual(sd.state(),{'unit_file_state':'disabled','active_state':'active'})
+
+    def test_interrupt_inside_timer_enable_and_start(self):
+        for operation in ('enable','start'):
+            with self.subTest(operation=operation),tempfile.TemporaryDirectory() as d:
+                env=self.environment(Path(d),first=True);sd=env[-1];original=sd.__call__
+                def crash(args,**kwargs):
+                    result=original(args,**kwargs)
+                    if list(args)[:2]==['systemctl',operation]:raise SystemExit('timer state interrupted')
+                    return result
+                with patch.object(TimerSystemd,'__call__',side_effect=crash),self.assertRaises(SystemExit):self.install(env)
+                self.assertTrue((env[0]/'program-pending.json').exists())
+                self.assertTrue(self.recover(env))
+                self.assertEqual(sd.state(),{'unit_file_state':'enabled','active_state':'active'})
+
+    def test_lock_contention_cannot_migrate_legacy_owner(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as d:
+            env=self.environment(Path(d));m=env[3]
+            competitor=Manager(m.state,FakeCores(),FakeServices(Path(d)/'other-units'))
+            with (m.state/'.lock').open('a') as held:
+                fcntl.flock(held,fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaises(PilotError):
+                    with competitor.locked():pass
+                self.assertEqual((m.state/'.owner').read_text(),LEGACY_OWNER)
+                # No marker write at all is allowed before lock acquisition.
+                with patch('nodepilot_pkg.manager.atomic_bytes',side_effect=AssertionError('write before lock')):
+                    with self.assertRaises(PilotError):
+                        with competitor.locked():pass
+
+    def test_existing_candidate_must_match_trusted_source_before_execution(self):
+        with tempfile.TemporaryDirectory() as d:
+            env=self.environment(Path(d));root=env[0];sd=env[-1]
+            new=root/'app'/('b'*64);new.mkdir();(new/'nodepilot').write_text('modified')
+            atomic_json(new/'files.json',{'schema':1,'recovery_schema':2,'files':['nodepilot'],
+                                        'hashes':{'nodepilot':hashlib.sha256(b'modified').hexdigest()}})
+            with self.assertRaises(PilotError):self.install(env)
+            self.assertFalse(any(c[0]=='python3' for c in sd.calls));self.assert_original(env)
+
+    def test_masked_unknown_transient_dropin_and_external_unit_refuse(self):
+        for mode in ('masked','unknown','activating','dropin','external'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as d:
+                env=self.environment(Path(d));root,launcher,units,m,source,sd=env
+                original=sd.__call__
+                def unsafe(args,**kwargs):
+                    if args[:2]==['systemctl','show']:
+                        if mode in ('masked','unknown') and 'UnitFileState' in args:return mode
+                        if mode=='activating' and 'ActiveState' in args:return mode
+                        if mode=='dropin' and 'DropInPaths' in args:return '/etc/foreign.conf'
+                        if mode=='external' and 'FragmentPath' in args:return '/usr/lib/systemd/system/foreign.timer'
+                    return original(args,**kwargs)
+                with patch.object(TimerSystemd,'__call__',side_effect=unsafe),self.assertRaises(PilotError):self.install(env)
+                self.assert_original(env)
+
+    def test_legacy_rc2_log_preserves_observed_disabled_policy_and_evidence(self):
+        from nodepilot_pkg import deploy
+        with tempfile.TemporaryDirectory() as d:
+            env=self.environment(Path(d),'disabled','active');root=env[0]
+            original=deploy.checkpoint
+            def crash(journal,record,step):
+                original(journal,record,step)
+                if step=='candidate':raise SystemExit('power loss')
+            with patch('nodepilot_pkg.deploy.checkpoint',side_effect=crash),self.assertRaises(SystemExit):self.install(env)
+            record=read_json(root/'program-pending.json')
+            legacy={k:v for k,v in record.items() if k not in {'transaction_version','previous','hashes','old_version','target_version','step'}}
+            atomic_json(root/'program-pending.json',legacy)
+            self.assertTrue(self.recover(env))
+            self.assertEqual(read_json(root/'program-pending-rc2.json'),legacy)
+            self.assertEqual(env[-1].state(),{'unit_file_state':'disabled','active_state':'active'})
+
+    def test_corrupt_snapshot_and_manifest_reject_without_execution_or_cleanup(self):
+        from nodepilot_pkg import deploy
+        for mode in ('snapshot','hash','extra_module','schema','state_path','missing_candidate'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as d:
+                env=self.environment(Path(d));root,launcher,units,m,source,sd=env
+                original=deploy.checkpoint
+                def crash(journal,record,step):
+                    original(journal,record,step)
+                    if step=='candidate':raise SystemExit('power loss')
+                with patch('nodepilot_pkg.deploy.checkpoint',side_effect=crash),self.assertRaises(SystemExit):self.install(env)
+                journal=root/'program-pending.json';record=read_json(journal)
+                if mode=='snapshot':record['previous']['timer']['active_state']='unknown'
+                elif mode=='hash':record['hashes']['nodepilot']='0'*64
+                elif mode=='schema':record['transaction_version']=99
+                elif mode=='state_path':record['previous']['state']='/external/state'
+                elif mode=='extra_module':(root/'app'/('b'*64)/'foreign.py').write_text('unverified')
+                else:(root/'app'/('b'*64)).rename(root/'app'/'missing')
+                atomic_json(journal,record);before=journal.read_bytes();sd.calls.clear()
+                with self.assertRaises(PilotError):self.recover(env)
+                self.assertEqual(journal.read_bytes(),before)
+                self.assertFalse(any(c[0]=='python3' for c in sd.calls))
+                self.assertEqual((root/'app/current').resolve().name,'a'*64)
 
 
 @unittest.skipUnless(os.name=='posix','durable node revisions')
