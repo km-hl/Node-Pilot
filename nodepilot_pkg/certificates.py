@@ -46,7 +46,9 @@ def acme(n, renew=False, state=Path("/etc/nodepilot")):
     elif challenge == 'http-01':
         bindings = http01_bindings(dns_matches(domain, public_ips()))
         for address in bindings:
-            port_free(address, 80, "tcp")
+            port_free(address, 80, "tcp", v6only=True)
+        if len(bindings) != 1:
+            raise PilotError('Certbot standalone 双栈监听尚不能可靠保证；请选择 Cloudflare DNS-01，或使用显式分族监听的 Caddy。未修改 IPv6/现有服务。')
         authenticator = ['--standalone', '--preferred-challenges', 'http', '--http-01-port', '80', '--http-01-address', bindings[-1]]
     else:
         raise PilotError('不支持的 ACME 挑战方式。')
@@ -71,7 +73,8 @@ def acme(n, renew=False, state=Path("/etc/nodepilot")):
     run([*command, "certonly", *authenticator, "--non-interactive", "--agree-tos", *contact,*isolated,
          "--server", "https://acme-v02.api.letsencrypt.org/directory", "--cert-name", n["id"],
          "--force-renewal" if renew else "--keep-until-expiring", "-d", domain],
-         timeout=240+(tls.get('dns',{}).get('propagation_seconds',60) if challenge=='dns-cloudflare' else 0))
+         timeout=240+(tls.get('dns',{}).get('propagation_seconds',60) if challenge=='dns-cloudflare' else 0),
+         graceful_interrupt=challenge=='dns-cloudflare')
     lineage = base / "config/live" / n["id"]
     return lineage / "fullchain.pem", lineage / "privkey.pem"
 
@@ -156,7 +159,7 @@ def information(n, state=Path('/etc/nodepilot'), files=None):
         fields = dict(line.split('=',1) for line in output.splitlines() if '=' in line)
         date = datetime.strptime(fields['notAfter'], '%b %d %H:%M:%S %Y %Z').replace(tzinfo=timezone.utc)
         result.update(issuer=fields['issuer'], expires=date.isoformat(), days=int((date-datetime.now(timezone.utc)).total_seconds()//86400))
-        result['status'] = '有效' if result['days'] >= 0 else '已过期'
+        result['status'] = '已过期' if result['days'] < 0 else ('临期' if result['days'] < 30 else '有效')
     except (PilotError, TypeError, KeyError, ValueError):
         pass
     path = Path(state)/'certificate-status'/(n['id']+'.json')
@@ -175,4 +178,14 @@ def information(n, state=Path('/etc/nodepilot'), files=None):
             result['automatic_enabled']=False
     else:
         result['automatic_enabled']=False
+    settings = n.get('caddy',{}).get('dns') if n['protocol']=='reality' else n.get('tls',{}).get('dns')
+    result['dns_credentials'] = '不适用'
+    if automatic and settings:
+        from .dns_credentials import credential_path
+        try:
+            credential_path(state, settings['credential_id'], pending=False)
+            result['dns_credentials'] = '已绑定（权限仍需续期时验证）'
+        except (PilotError, KeyError):
+            result['dns_credentials'] = 'DNS 凭据缺失；请重新绑定 Token'
+    result['renewal_failed'] = '失败' in result['last_renewal'].get('status','')
     return result

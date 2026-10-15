@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .common import PilotError, run
 from .model import host, split_target
@@ -173,7 +174,7 @@ def tls_handshake(ip, port, sni, timeout=4):
         raise TargetFailure("tls", "未协商 TLS 1.3")
     if not re.search(r"ALPN protocol:\s*h2\b", output):
         raise TargetFailure("alpn", "未协商 HTTP/2 h2")
-    group = re.search(r"(?:Server|Peer) Temp Key:\s*(X25519(?:MLKEM768)?)[,\s]", output)
+    group = re.search(r"(?:Server|Peer) Temp Key:\s*(X25519)[,\s]", output)
     if not group:
         raise TargetFailure("unverified", "实际 X25519 密钥交换组未验证")
     if not re.search(r"Verify return code:\s*0\s*\(ok\)", output):
@@ -263,3 +264,51 @@ def rank_targets(domains=None, report=None):
         if report:
             report(message)
     return sorted(ranked, key=lambda x: (x["median_ms"], x["spread_ms"]))
+
+
+def target_identity(node):
+    import hashlib
+    import json
+    return hashlib.sha256(json.dumps([node['sni'], node['reality']['target'],
+                                     node['reality']['server_names']],sort_keys=True).encode()).hexdigest()
+
+
+def recheck_target(state, node):
+    """Manual read-only network recheck; never select a replacement address."""
+    from .common import atomic_json, private_dir
+    if node['protocol']!='reality' or node['reality'].get('mode')=='self':
+        raise PilotError('此操作只适用于第三方 Reality 目标；自建目标请查看 Caddy 证书/服务。')
+    fixed, _ = split_target(node['reality']['target'])
+    record = {'identity':target_identity(node), 'checked_at':datetime.now(timezone.utc).isoformat(),
+              'status':'检测失败，需要手动重选', 'dns':[], 'dns_drift':None, 'target':node['reality']['target']}
+    try:
+        addresses, _ = resolve(node['sni'])
+        record.update(dns=addresses, dns_drift=fixed not in addresses)
+    except (PilotError, OSError):
+        record['dns_error']='当前 DNS 未验证'
+    try:
+        # inspect_target probes precisely this fixed IP, rather than a new DNS IP.
+        if not is_ip(fixed):
+            raise PilotError('旧目标尚未固定 IP；请在菜单 5 手动重新检测并选择目标。')
+        for sni in node['reality']['server_names']:
+            check = inspect_target(node['reality']['target'],sni,cloudflare_networks())
+        record.update(status='最近检测通过：TLS1.3 / X25519 / h2 / 可信证书', result=check)
+    except (PilotError, OSError) as error:
+        record['diagnostic']=str(error)
+    if record['dns_drift']:
+        record['status'] += '；固定 IP 与当前 DNS 存在差异，请评估手动重选'
+    atomic_json(private_dir(Path(state)/'target-status')/(node['id']+'.json'),record)
+    return record
+
+
+def target_status(state, node):
+    from .common import read_json
+    path = Path(state)/'target-status'/(node['id']+'.json')
+    if path.exists():
+        record = read_json(path)
+        if record.get('identity')==target_identity(node):
+            return record['status']+'；检测时间 '+record['checked_at']
+    selection = node['reality'].get('selection',{})
+    if selection.get('target') == node['reality']['target']:
+        return '选站时检测通过；时间 '+selection.get('checked_at','未知')+'；菜单 8 → 5 可手动复查固定 IP/DNS'
+    return '尚未检测当前固定目标；菜单 8 → 5 可检查并评估手动重选'

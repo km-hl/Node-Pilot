@@ -26,6 +26,7 @@ class Menu:
         self.manager = Manager()
         self.system = supported()
         self.ips = public_ips()
+        self.pending_profiles = []
 
     def say(self, value=""):
         print(value, file=self.tty, flush=True)
@@ -72,10 +73,14 @@ class Menu:
                 info = information(n,self.manager.state,self.manager.caddy.certificate_files(n) if n['protocol']=='reality' else None)
                 if info:
                     self.say(f"  证书：{info['status']}，剩余 {info['days']} 天；自动续期运行：{'是' if info['automatic_enabled'] else '否'}；最近：{info['last_renewal']['status']}")
+                    self.say('  DNS 凭据：'+info['dns_credentials']+('；自动续期异常，请检查 Zone 权限/传播和私有日志' if info['renewal_failed'] else ''))
             except PilotError:
                 self.say('  证书状态暂不可读取。')
             from .connectivity import latest
             self.say('  最近联通：'+latest(self.manager,n)['status'])
+            if n['protocol']=='reality' and n['reality'].get('mode')!='self':
+                from .targets import target_status
+                self.say('  目标：'+target_status(self.manager.state,n))
 
     def ensure_core(self, core):
         try:
@@ -207,15 +212,27 @@ class Menu:
             n["tls"] = {"mode": "acme", "domain": n["sni"], "email": contact,
                         "certificate": "/nonexistent/nodepilot-cert", "key": "/nonexistent/nodepilot-key"}
             if dns:
-                from .dns_credentials import store_token, validate_settings
+                from .dns_credentials import credential_path, stage_token, validate_settings, verify_zone
                 self.say('Token 仅授予所需 Zone 的 DNS:Edit / Zone:Read；不使用 Global API Key。凭据存储于 root 私有文件，不进入节点链接。')
                 zone = self.ask('Cloudflare Zone ID')
                 seconds = int(self.ask('DNS 传播等待秒数（10–600）','60'))
                 import getpass
-                token = getpass.getpass('Cloudflare API Token（隐藏输入）：',stream=self.tty)
-                settings = {'zone_id':zone,'propagation_seconds':seconds,'credential_id':store_token(self.manager.state,token)}
-                del token
-                validate_settings(settings)
+                profile = self.ask('复用已有凭据 ID（留空新建；只输入 cf- ID，不输入 Token）','')
+                settings = {'zone_id':zone,'propagation_seconds':seconds}
+                if profile:
+                    settings['credential_id']=profile
+                    validate_settings(settings)
+                    with self.manager.locked():
+                        credential_path(self.manager.state,profile,pending=False)
+                        verify_zone(self.manager.state,settings,n['sni'])
+                else:
+                    token = getpass.getpass('Cloudflare API Token（隐藏输入）：',stream=self.tty)
+                    try:
+                        with self.manager.locked():
+                            settings = stage_token(self.manager.state,token,settings,n['sni'])
+                        self.pending_profiles.append(settings['credential_id'])
+                    finally:
+                        del token
                 n['tls'].update(challenge='dns-cloudflare',dns=settings)
         elif choice == "4":
             if not self.confirm("自签名仅供测试；客户端必须手动信任 certificate.pem，分享链接保持证书验证"):
@@ -353,11 +370,22 @@ class Menu:
         return n, renew
 
     def create(self, protocol):
+        self.memory_notice()
         n, renew = self.node_input(protocol)
+        self.say(f"将部署 {n['protocol']} {n['listen']}:{n['port']}/{n['transport']}，SNI={n['sni']}。")
+        if not self.confirm('确认创建节点；新 DNS 凭据仅在部署成功后正式登记'):
+            return
         with self.manager.locked():
             saved = self.manager.apply(n, renew=renew)
         self.say(display(saved))
         self.say(f"请手动检查防火墙/云安全组放行 {saved['port']}/{saved['transport']}；尚未证明客户端联通。")
+
+    def memory_notice(self):
+        from .system import available_memory
+        memory = available_memory()
+        self.say(f"内存 MiB：总量 {memory.get('MemTotal','未知')}，当前可用 {memory.get('MemAvailable','未知')}。")
+        if memory.get('MemTotal',1024)<384 or memory.get('MemAvailable',1024)<192:
+            self.say('低内存提醒：优先单协议；更新与证书申请会增加峰值，256MiB 不保证三协议共存。')
 
     def edit(self, old=None):
         old = old or self.select()
@@ -394,11 +422,12 @@ class Menu:
             with self.manager.locked():
                 backup = self.manager.delete(n["id"])
             self.say(f"已删除；含凭据的备份：{backup}")
+            self.say('DNS 凭据按备份/修订/事务引用保留；菜单 10 → 7 可只读检查并确认清理孤立凭据。')
 
     def status(self):
         n = self.select()
         self.say('服务状态：'+self.manager.services.runtime(n)['state'])
-        action = self.ask("1 查看日志  2 重启此节点  3 Caddy 日志  4 本机 Reality HTTPS 测试  0 返回", "0")
+        action = self.ask("1 查看日志  2 重启此节点  3 Caddy 日志  4 本机 Reality HTTPS 测试  5 重新检查固定 Reality 目标（不改节点）  0 返回", "0")
         if action == "1":
             self.say(self.manager.services.logs(n))
         elif action == "2":
@@ -412,6 +441,11 @@ class Menu:
             from .connectivity import check
             with self.manager.locked():
                 self.say(check(self.manager,n)['status'])
+        elif action == '5':
+            from .targets import recheck_target
+            with self.manager.locked():
+                self.say(recheck_target(self.manager.state,n))
+            self.say('未改动 SNI/target/认证；如需重选，请使用菜单 5 并确认链接变更。')
 
     def update(self):
         self.say("1 安装/更新 Xray  2 安装/更新 sing-box  3 更新 NodePilot  4 安装/更新 Caddy\n5 检查全部版本更新  0 返回")
@@ -438,7 +472,7 @@ class Menu:
             self.say(f"已安装并验证：{destination.name}")
 
     def backup_restore(self):
-        choice = self.ask("1 备份  2 恢复空目录  3 更换证书  4 证书详情  5 强制续期  6 导出 Mihomo YAML")
+        choice = self.ask("1 备份  2 恢复空目录  3 更换证书  4 证书详情  5 强制续期  6 导出 Mihomo YAML  7 DNS 凭据审计/清理")
         if choice == "1":
             with self.manager.locked():
                 self.say(f"私有备份（含密码和私钥）：{self.manager.backup()}")
@@ -457,6 +491,8 @@ class Menu:
                 return
             n = copy.deepcopy(n)
             renew = self.tls_input(n)
+            if not self.confirm('确认更换证书来源；新 DNS 凭据在服务加载成功后登记'):
+                return
             with self.manager.locked():
                 self.manager.apply(n, renew=renew)
             self.say("证书配置已更新。")
@@ -481,6 +517,17 @@ class Menu:
                     raise PilotError('请输入尚不存在的绝对文件路径。')
                 atomic_bytes(destination,mihomo_yaml(self.manager.nodes()).encode())
                 self.say(f'已导出私有 YAML：{destination}；实际客户端联通仍需验证。')
+        elif choice == '7':
+            from .dns_credentials import audit, cleanup_orphans
+            with self.manager.locked():
+                records = audit(self.manager.state)
+            for record in records:
+                self.say(f"{record['id']}：{'孤立' if record['orphan'] else '保留'}；引用 {len(record['references'])} 个（包括旧修订、备份、接管和事务）。")
+            selected = [r['id'] for r in records if r['orphan']]
+            if selected and self.confirm('确认只清理以上无任何引用的正式凭据'):
+                with self.manager.locked():
+                    cleanup_orphans(self.manager.state,selected,confirmed=True)
+                self.say('孤立凭据已清理。')
         else:
             raise PilotError("无效选项。")
 
@@ -498,6 +545,8 @@ class Menu:
 
     def start(self):
         with self.manager.locked():
+            from .deploy import recover_program
+            recover_program(manager=self.manager)
             from .installation import recover_uninstall
             if recover_uninstall(self.manager):
                 self.say("已完成中断的卸载；私有备份保留。")
@@ -506,6 +555,8 @@ class Menu:
             self.manager.recover()
             from .adoption import Adoptions
             Adoptions(self.manager).recover()
+            from .dns_credentials import recover_pending
+            recover_pending(self.manager.state)
         for core in ("xray", "sing-box"):
             for path in (f"/etc/{core}", "/etc/s-box", f"/usr/local/bin/{core}", f"/usr/bin/{core}"):
                 if Path(path).exists():
@@ -529,6 +580,7 @@ class Menu:
                 self.say("NodePilot Caddy：" + ("运行中" if self.manager.caddy.active() else "未运行"))
             from . import __version__
             self.say(f"NodePilot 版本：{__version__}")
+            self.memory_notice()
             self.say("1. 安装 VLESS + Reality\n2. 安装 AnyTLS\n3. 安装 Hysteria2\n4. 查看全部节点\n5. 修改节点配置\n6. 删除指定节点\n7. 查看分享链接\n8. 服务状态/日志/重启\n9. 安装/更新内核与脚本（可选版本）\n10. 备份/恢复/证书\n11. 端口与网络诊断\n12. 卸载 NodePilot\n13. 接管/归还现有 Xray 或 sing-box\n14. 检查更新版本\n0. 退出")
             try:
                 choice = self.ask("请输入选项")
@@ -566,3 +618,12 @@ class Menu:
                 self.say("本次操作已取消；可以继续选择菜单。")
             except EOFError:
                 return 0
+            finally:
+                if self.pending_profiles:
+                    from .dns_credentials import recover_pending
+                    try:
+                        with self.manager.locked():
+                            recover_pending(self.manager.state,owned=self.pending_profiles,only_owned=True)
+                    except PilotError as error:
+                        self.say(f'临时凭据清理未完成：{error}；重新进入菜单恢复。')
+                    self.pending_profiles.clear()

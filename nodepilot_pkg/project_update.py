@@ -7,13 +7,13 @@ from urllib.parse import urlsplit
 
 from .common import PilotError, read_json, run
 from .download import fetch
-from .manager import OWNER
+from .manager import LEGACY_OWNER, OWNER
 from .releases import release as official_release, stable_versions, version
 
 
 def bound_repository(root=Path("/opt/nodepilot")):
     root = Path(root)
-    if root.is_symlink() or (root / ".owner").read_text() != OWNER:
+    if root.is_symlink() or (root / ".owner").read_text() not in {OWNER,LEGACY_OWNER}:
         raise PilotError("项目安装所有权标记不匹配。")
     record = root / "source.json"
     if not record.exists():

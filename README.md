@@ -1,5 +1,7 @@
 # NodePilot
 
+当前为 **v0.4.0 RC2 候选**，PR 保持草稿；[RC2 验证报告](docs/RC_TWO_VALIDATION.md) 区分本轮、历史和未完成验收。不建议现在合并或发布稳定版。
+
 轻量 VPS 节点搭建与管理工具，当前源码 `0.4.0` 候选。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
 
 **当前状态：三协议已在 Debian 13 真实 VPS 上通过外网数据传输、HTTPS、生命周期及受限资源短测。** TLS 使用明确标记的测试自签名证书并在客户端导入信任，未关闭验证；ACME 实际签发、完整 256MiB 实机长测及 GUI 客户端矩阵仍待验证。详见 [真实 VPS 测试报告](docs/VPS_TEST_REPORT.md)、[本地记录](docs/VALIDATION.md) 和 [验收清单](docs/VPS_ACCEPTANCE.md)。
@@ -64,6 +66,8 @@ nodepilot
   adoptions/a-<随机ID>/           私有原配置、单元、证书备份及持久化切换记录
   uninstall.json                 卸载阶段和恢复进度；不等同于原子卸载
   credentials/cf-<随机ID>.ini     0600 Cloudflare Token；不包含在节点导出中
+  credentials/pending/          未提交 Token / 进程标记；成功部署后登记，失败或取消清理
+  deletions/n-<随机ID>.json       删除最终清理日志；节点目录部分删除后仍可恢复
   certificate-status/ / probes/  私有续期状态及本机测试结果
   acme/n-<随机ID>/                独立 certbot 配置/账户/日志
   caddy/config.json / admin.sock  共享目标配置、私有 Unix 管理套接字
@@ -71,6 +75,7 @@ nodepilot
 /opt/nodepilot/
   app/<项目包SHA256>/             带安装文件清单的程序修订
   app/current                    原子选择当前程序版本
+  program-pending.json           程序升级持久日志；候选文件逐个 SHA-256 检查
   cores/<xray或sing-box或caddy>/<版本>/   本项目校验内核
 /etc/systemd/system/
   nodepilot-n-<随机ID>.service

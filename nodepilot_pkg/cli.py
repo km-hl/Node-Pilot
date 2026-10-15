@@ -49,6 +49,8 @@ def main(argv=None):
             supported()
             manager = Manager()
             with manager.locked():
+                from .deploy import recover_program
+                recover_program(manager=manager)
                 from .installation import recover_uninstall
                 if recover_uninstall(manager):
                     return 0

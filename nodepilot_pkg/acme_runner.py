@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import sys
+import signal
 import traceback
 from pathlib import Path
 
@@ -50,6 +51,9 @@ def main():
         isolate_provider_environment(path.parent)
         logging.setLogRecordFactory(log_factory(secret))
         sys.stdout=RedactedOutput(sys.stdout,secret);sys.stderr=RedactedOutput(sys.stderr,secret)
+        def interrupted(signum, frame):
+            raise KeyboardInterrupt()
+        signal.signal(signal.SIGTERM,interrupted)
         from certbot.main import main as certbot_main
         return certbot_main(args)
     except (Exception,KeyboardInterrupt):

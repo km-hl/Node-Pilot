@@ -85,7 +85,7 @@ def public_ips():
     return found
 
 
-def port_free(listen, port, transport):
+def port_free(listen, port, transport, v6only=False):
     # TCP cores reuse TIME_WAIT addresses. listen() still rejects live listeners.
     # UDP must not enable reuse: it could hide a live QUIC listener.
     address = ipaddress.ip_address(listen)
@@ -96,7 +96,7 @@ def port_free(listen, port, transport):
             if kind == socket.SOCK_STREAM:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if family == socket.AF_INET6:
-                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, int(v6only))
             sock.bind((listen, port))
             if kind == socket.SOCK_STREAM:
                 sock.listen(1)
@@ -160,6 +160,15 @@ def http01_bindings(answers):
     if not versions:
         raise PilotError("HTTP-01 没有可验证的 DNS 地址。")
     return [address for version, address in ((4, "0.0.0.0"), (6, "::")) if version in versions]
+
+
+def available_memory(path=Path('/proc/meminfo')):
+    """Read-only estimate; no swap/sysctl changes and no hardware guarantee."""
+    try:
+        values = dict(re.findall(r'^(MemTotal|MemAvailable):\s+(\d+) kB$', path.read_text(), re.M))
+        return {k: int(v)//1024 for k, v in values.items()}
+    except (OSError, ValueError):
+        return {}
 
 
 def diagnostics(n=None):

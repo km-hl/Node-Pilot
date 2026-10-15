@@ -105,7 +105,7 @@ def validate(n):
             if c['certificate_mode'] == 'dns01':
                 from .dns_credentials import validate_settings
                 validate_settings(c.get('dns',{}))
-            if c.get('http01_listen') and (not isinstance(c['http01_listen'],list) or any(v not in {':80','0.0.0.0:80','[::]:80'} for v in c['http01_listen'])):
+            if c.get('http01_listen') and (not isinstance(c['http01_listen'],list) or any(v not in {':80','0.0.0.0:80','[::]:80','tcp4/0.0.0.0:80','tcp6/[::]:80'} for v in c['http01_listen'])):
                 raise PilotError('非法 HTTP-01 监听地址。')
             if c.get("upstream"):
                 h, p = split_target(c["upstream"])

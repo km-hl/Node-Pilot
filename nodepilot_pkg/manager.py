@@ -17,22 +17,25 @@ from .model import ID, validate
 from .services import Services
 from .system import conflicts, port_free, probe_reality, same_binding
 
-OWNER = "NodePilot schema=1\n"
+LEGACY_OWNER = "NodePilot schema=1\n"
+OWNER = "NodePilot schema=2\n"
 
 
 class Manager:
-    def __init__(self, state=Path("/etc/nodepilot"), cores=None, services=None, caddy=None):
+    def __init__(self, state=Path("/etc/nodepilot"), cores=None, services=None, caddy=None, migrate_owner=True):
         self.state = Path(state)
         self.cores = cores or Cores()
         self.services = services or Services(state)
         self.caddy = caddy or Caddy(self.state, self.cores, self.services.units)
+        self.migrate_owner = migrate_owner
 
     def initialize(self):
         marker = self.state / ".owner"
-        if self.state.exists() and (self.state.is_symlink() or marker.is_symlink() or not marker.is_file() or marker.read_text() != OWNER):
+        if self.state.exists() and (self.state.is_symlink() or marker.is_symlink() or not marker.is_file() or marker.read_text() not in {OWNER, LEGACY_OWNER}):
             raise PilotError("配置目录已有非 NodePilot 内容；拒绝接管/覆盖。")
         private_dir(self.state)
-        atomic_bytes(marker, OWNER.encode())
+        marker_content = marker.read_text() if marker.is_file() and not self.migrate_owner else OWNER
+        atomic_bytes(marker, marker_content.encode())
         for directory in ("nodes", "backups", "acme"):
             private_dir(self.state / directory)
 
@@ -110,6 +113,14 @@ class Manager:
         return path
 
     def apply(self, node, probe=True, renew=False):
+        from .dns_credentials import profiles, recover_pending
+        try:
+            return self._apply(node, probe, renew)
+        finally:
+            # Failed validation/preflight is covered as well as restart failure.
+            recover_pending(self.state, owned=profiles(node), only_owned=True)
+
+    def _apply(self, node, probe=True, renew=False):
         # Caller holds the global lock. Revision dirs stay immutable once published.
         n = copy.deepcopy(node)
         validate(n)
@@ -142,10 +153,17 @@ class Manager:
             raise PilotError("已有未完成节点目录；请先执行恢复，不覆盖。")
         else:
             self.services.assert_owned(n, missing=True)
+        caddy_previous = None
+        caddy_path=self.state/'caddy/config.json'
+        if managed and (self.services.units/'nodepilot-caddy.service').exists():
+            if caddy_path.is_symlink() or not caddy_path.is_file() or caddy_path.stat().st_size>256*1024:
+                raise PilotError('Caddy 原配置无法安全备份，拒绝切换。')
+            caddy_previous=caddy_path.read_bytes()
         private_dir(path)
         revision = private_dir(private_dir(path / "revisions") / ("r-" + secrets.token_hex(8)))
         pending = path / "pending.json"
-        atomic_json(pending, {"kind": "node", "old": str(old_revision) if old else None, "node": n})
+        atomic_json(pending, {"schema":2,"kind": "node", "old": str(old_revision) if old else None, "node": n,
+            'caddy_previous':base64.b64encode(caddy_previous).decode() if caddy_previous is not None else None})
         try:
             if n["protocol"] != "reality":
                 certificates.prepare(n, revision, renew, self.state)
@@ -162,12 +180,17 @@ class Manager:
             if not old:
                 self.services.install(n)
             self.services.restart(n)
+            from .dns_credentials import commit_node
+            commit_node(self.state, n)
         except (Exception, KeyboardInterrupt) as error:
             try:
                 if old:
                     self.point(n["id"], old_revision)
                     if managed:
-                        self.caddy.sync(self.nodes())
+                        if caddy_previous is not None:
+                            self.caddy.restore_configuration(caddy_previous)
+                        else:
+                            self.caddy.sync(self.nodes())
                     self.services.restart(old)
                 else:
                     self.services.assert_owned(n, missing=True)
@@ -175,12 +198,17 @@ class Manager:
                         self.services.remove(n)
                     (path / "current").unlink(missing_ok=True)
                     if managed:
-                        self.caddy.sync(self.nodes())
+                        if caddy_previous is not None:
+                            self.caddy.restore_configuration(caddy_previous)
+                        else:
+                            self.caddy.sync(self.nodes())
                     shutil.rmtree(path)
             except Exception as rollback:
                 raise PilotError(f"操作失败且自动回滚未完成：{rollback}；保留 pending.json，重新进入菜单恢复。") from error
             if old:
                 pending.unlink(missing_ok=True)
+            if (n.get('tls',{}).get('mode')=='acme') or (own_target(n) and n['caddy']['certificate_mode']=='dns01'):
+                certificates.event(self.state,n,'证书切换/服务加载失败，已回滚原修订')
             raise PilotError(f"操作失败，已回滚：{error}") from error
         pending.unlink()
         fsync_dir(path)
@@ -193,7 +221,7 @@ class Manager:
         self.services.assert_owned(n)
         backup = self.backup()
         path = self.node_dir(node_id)
-        atomic_json(path / "pending.json", {"kind": "delete", "node": n})
+        atomic_json(path / "pending.json", {"schema":2,"kind": "delete", "node": n})
         try:
             self.services.remove(n)
             if own_target(n):
@@ -206,12 +234,27 @@ class Manager:
             self.services.restart(n)
             (path / "pending.json").unlink(missing_ok=True)
             raise
-        # Delete only the exact, validated random-ID subtree. ACME data is separately owned.
-        shutil.rmtree(path)
-        acme_dir = self.state / "acme" / node_id
+        self.finish_delete(n)
+        return backup
+
+    def finish_delete(self, n):
+        # This journal survives partial rmtree of the node itself.
+        directory=private_dir(self.state/'deletions')
+        journal=directory/(n['id']+'.json')
+        atomic_json(journal,{'schema':2,'node':n})
+        self.services.assert_owned(n,missing=True)
+        if (self.services.units/n['service']).exists():
+            self.services.remove(n)
+        path=self.node_dir(n['id'])
+        acme_dir = self.state / "acme" / n['id']
+        if acme_dir.is_symlink():
+            raise PilotError('ACME 清理路径为外部链接；保留删除事务。')
         if acme_dir.is_dir() and not acme_dir.is_symlink():
             shutil.rmtree(acme_dir)
-        return backup
+        if path.exists():
+            shutil.rmtree(path)
+        fsync_dir(self.state/'nodes')
+        journal.unlink();fsync_dir(directory)
 
     def restart(self, n):
         if own_target(n):
@@ -220,11 +263,23 @@ class Manager:
         self.services.restart(n)
 
     def recover(self):
+        directory=self.state/'deletions'
+        if directory.is_symlink():
+            raise PilotError('删除事务目录为外部链接。')
+        for journal in sorted(directory.glob('*.json')):
+            if journal.is_symlink():
+                raise PilotError('删除事务为外部链接。')
+            record=read_json(journal);n=validate(record['node'])
+            if record.get('schema')!=2 or journal.stem!=n['id']:
+                raise PilotError('删除事务 schema/ID 不匹配。')
+            self.finish_delete(n)
         for path in sorted((self.state / "nodes").iterdir()):
             pending = path / "pending.json"
             if not pending.exists():
                 continue
             record = read_json(pending)
+            if record.get('schema',1) not in {1,2} or record.get('kind') not in {'node','delete'}:
+                raise PilotError('节点事务 schema/类型不受支持，拒绝恢复。')
             n = validate(record["node"])
             if n["id"] != path.name:
                 raise PilotError("恢复记录 ID 与目录不匹配。")
@@ -234,11 +289,14 @@ class Manager:
                     self.services.remove(n)
                 if own_target(n):
                     self.caddy.sync([o for o in self.nodes() if o["id"] != n["id"]])
-                shutil.rmtree(path)
+                self.finish_delete(n)
             elif record.get("old"):
                 self.point(n["id"], Path(record["old"]))
                 if own_target(n) or own_target(self.get(n["id"])):
-                    self.caddy.sync(self.nodes())
+                    if record.get('caddy_previous') is not None:
+                        self.caddy.restore_configuration(base64.b64decode(record['caddy_previous'],validate=True))
+                    else:
+                        self.caddy.sync(self.nodes())
                 self.services.restart(self.get(n["id"]))
                 pending.unlink()
             else:
@@ -246,8 +304,13 @@ class Manager:
                     self.services.remove(n)
                 (path / "current").unlink(missing_ok=True)
                 if own_target(n):
-                    self.caddy.sync(self.nodes())
+                    if record.get('caddy_previous') is not None:
+                        self.caddy.restore_configuration(base64.b64decode(record['caddy_previous'],validate=True))
+                    else:
+                        self.caddy.sync(self.nodes())
                 shutil.rmtree(path)
+        from .dns_credentials import recover_pending
+        recover_pending(self.state)
 
     def update_core(self, core, selected="latest"):
         affected = [n for n in self.nodes() if n["core"] == core or (core == "caddy" and own_target(n))]
@@ -262,8 +325,15 @@ class Manager:
                 self.cores.check(n, self.revision(n["id"]) / "config.json", destination / core)
         current = self.cores.root / core / "current"
         old = current.resolve() if current.exists() else None
+        caddy_previous=None
+        if core=='caddy' and affected:
+            config=self.state/'caddy/config.json'
+            if config.is_symlink() or not config.is_file() or config.stat().st_size>256*1024:
+                raise PilotError('Caddy 原配置无法备份，拒绝内核切换。')
+            caddy_previous=config.read_bytes()
         pending = self.state / "core-pending.json"
-        atomic_json(pending, {"core": core, "old": str(old) if old else None})
+        atomic_json(pending, {"schema":2,"core": core, "old": str(old) if old else None,
+            'caddy_previous':base64.b64encode(caddy_previous).decode() if caddy_previous is not None else None})
         try:
             self.cores.switch(core, destination)
             if core == "caddy" and affected:
@@ -276,7 +346,7 @@ class Manager:
             if old:
                 self.cores.switch(core, old)
                 if core == "caddy" and affected:
-                    self.caddy.sync(self.nodes(), restart=True)
+                    self.caddy.restore_configuration(caddy_previous)
                 for n in affected:
                     self.services.restart(n)
             else:
@@ -290,6 +360,8 @@ class Manager:
         pending = self.state / "core-pending.json"
         if pending.exists():
             record = read_json(pending)
+            if record.get('schema',1) not in {1,2}:
+                raise PilotError('内核事务 schema 不受支持。')
             core = record["core"]
             if core not in {"xray", "sing-box", "caddy"}:
                 raise PilotError("非法内核恢复记录。")
@@ -299,9 +371,12 @@ class Manager:
                     raise PilotError("内核恢复路径越界。")
                 self.cores.switch(core, old)
                 if core == "caddy":
-                    self.caddy.sync(self.nodes(), restart=True)
+                    if record.get('caddy_previous') is not None:
+                        self.caddy.restore_configuration(base64.b64decode(record['caddy_previous'],validate=True))
+                    else:
+                        self.caddy.sync(self.nodes(), restart=True)
                 for n in self.nodes():
-                    if n["core"] == core:
+                    if n["core"] == core or (core=='caddy' and own_target(n)):
                         self.services.restart(n)
             else:
                 (self.cores.root / core / "current").unlink(missing_ok=True)
@@ -331,8 +406,11 @@ class Manager:
                             atomic_bytes(Path(tmp) / name, data)
                         if own_target(n):
                             n["caddy"].update(certificate_mode="import", certificate=str(Path(tmp) / "certificate.pem"), key=str(Path(tmp) / "key.pem"))
+                            n['caddy'].pop('dns',None)
                         else:
                             n["tls"].update(mode="import", certificate=str(Path(tmp) / "certificate.pem"), key=str(Path(tmp) / "key.pem"))
+                            n['tls'].pop('dns',None)
+                            n['tls'].pop('challenge',None)
                     saved = self.apply(n)
                     restored.append(saved["id"])
         except (Exception, KeyboardInterrupt):

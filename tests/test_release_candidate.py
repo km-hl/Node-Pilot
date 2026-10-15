@@ -1,0 +1,380 @@
+"""RC2 fault injection. These tests never prove real ACME issuance."""
+import copy
+import hashlib
+import json
+import os
+import socket
+import tempfile
+import unittest
+from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import MagicMock, patch
+
+from nodepilot_pkg import certificates, dns_credentials as dns
+from nodepilot_pkg.common import PilotError, atomic_json, read_json
+from nodepilot_pkg.manager import LEGACY_OWNER, Manager, OWNER
+from test_config import fixture
+from test_manager import FakeCores, FakeServices
+
+
+class HttpRC2Tests(unittest.TestCase):
+    @unittest.skipUnless(Path('/proc/net/tcp').exists(),'Linux sockets')
+    def test_owned_ipv4_wildcard_cannot_prove_ipv6_listener(self):
+        from nodepilot_pkg.services import listening
+        with socket.socket() as sock:
+            sock.bind(('0.0.0.0',0));sock.listen(1)
+            self.assertFalse(listening({'listen':'::','port':sock.getsockname()[1],'transport':'tcp'},os.getpid(),strict_family=True))
+    def test_certbot_dual_stack_rejects_before_issuance_and_checks_both(self):
+        n=fixture('anytls');n['tls']['mode']='acme'
+        with patch('nodepilot_pkg.certificates.dns_matches',return_value={'8.8.8.8','2001:4860:4860::8888'}), \
+             patch('nodepilot_pkg.certificates.public_ips'),patch('nodepilot_pkg.certificates.port_free') as bind, \
+             patch('nodepilot_pkg.certificates.run') as command, self.assertRaisesRegex(PilotError,'DNS-01'):
+            certificates.acme(n)
+        self.assertEqual([c.args[0] for c in bind.call_args_list],['0.0.0.0','::'])
+        self.assertTrue(all(c.kwargs['v6only'] for c in bind.call_args_list))
+        command.assert_not_called()
+
+    def test_caddy_explicit_families_never_collapse_to_ipv6_wildcard(self):
+        from nodepilot_pkg.caddy import configuration
+        from test_caddy import self_node
+        n=self_node();n['caddy'].update(certificate_mode='acme',http01_listen=['tcp4/0.0.0.0:80','tcp6/[::]:80'])
+        self.assertEqual(configuration([n],'/test')['apps']['http']['servers']['http01']['listen'],n['caddy']['http01_listen'])
+
+    @unittest.skipUnless(os.name=='posix','Linux family binds')
+    def test_v6only_socket_does_not_hide_ipv4_busy_port(self):
+        from nodepilot_pkg.system import port_free
+        with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as ipv4:
+            ipv4.bind(('0.0.0.0',0));ipv4.listen(1);port=ipv4.getsockname()[1]
+            with self.assertRaises(PilotError):port_free('0.0.0.0',port,'tcp',v6only=True)
+            try:
+                port_free('::',port,'tcp',v6only=True)
+            except PilotError:
+                self.skipTest('IPv6 unavailable or busy in this environment')
+            with self.assertRaises(PilotError):port_free('::',port,'tcp',v6only=False)
+
+    def test_disabled_ipv6_fails_without_system_changes(self):
+        from nodepilot_pkg.system import port_free
+        with patch('nodepilot_pkg.system.socket.socket',side_effect=OSError('disabled')),self.assertRaises(PilotError):
+            port_free('::',80,'tcp',v6only=True)
+
+
+@unittest.skipUnless(os.name=='posix','Linux ownership and durable transactions')
+class CredentialLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
+        self.manager=Manager(self.root/'state',FakeCores(),FakeServices(self.root/'units'))
+        self.manager.initialize();self.state=self.manager.state
+        self.token='test_only_'+'a'*30
+        self.settings={'zone_id':'0'*32,'propagation_seconds':60}
+
+    def tearDown(self):self.tmp.cleanup()
+
+    def staged(self):
+        with patch('nodepilot_pkg.dns_credentials.verify_zone'):
+            return dns.stage_token(self.state,self.token,self.settings,'example.com')
+
+    def test_invalid_zone_and_token_never_write_credentials(self):
+        for settings,token in (({**self.settings,'zone_id':'bad'},self.token),(self.settings,'bad')):
+            with self.assertRaises(PilotError):dns.stage_token(self.state,token,settings,'example.com')
+        self.assertFalse(list(self.state.rglob('*.ini')))
+
+    def test_zone_failure_and_interrupt_clean_temp_token(self):
+        for error in (PilotError('API failed'),KeyboardInterrupt()):
+            with patch('nodepilot_pkg.dns_credentials.verify_zone',side_effect=error),self.assertRaises(type(error)):
+                dns.stage_token(self.state,self.token,self.settings,'example.com')
+            self.assertFalse(list(self.state.rglob('*.ini')))
+
+    def test_cancel_only_removes_owned_uncommitted_profile(self):
+        staged=self.staged();existing=dns.store_token(self.state,self.token)
+        dns.recover_pending(self.state,owned=[staged['credential_id']])
+        self.assertFalse((self.state/'credentials/pending'/(staged['credential_id']+'.ini')).exists())
+        self.assertTrue(dns.credential_path(self.state,existing,pending=False).exists())
+
+    def test_dead_process_recovery_and_live_other_menu_preserved(self):
+        staged=self.staged();path=dns.credential_path(self.state,staged['credential_id'])
+        dns.recover_pending(self.state)
+        self.assertTrue(path.exists())
+        with patch('nodepilot_pkg.dns_credentials.owner_alive',return_value=False):dns.recover_pending(self.state)
+        self.assertFalse(path.exists())
+
+    def test_validation_preflight_and_issuance_failure_clean_uncommitted(self):
+        for mode in ('validation','preflight','issuance','reload'):
+            settings=self.staged();n=fixture('anytls');n['tls'].update(mode='acme',challenge='dns-cloudflare',dns=settings)
+            if mode=='validation':n['port']=0
+            if mode=='reload':self.manager.services.fail_next=True
+            def prepare(node, revision, *args):
+                if mode=='issuance':raise PilotError('issuance failed')
+                node['tls'].update(certificate=str(revision/'certificate.pem'),key=str(revision/'key.pem'))
+            with patch('nodepilot_pkg.manager.port_free',side_effect=PilotError('busy') if mode=='preflight' else None), \
+                 patch('nodepilot_pkg.certificates.prepare',side_effect=prepare),self.assertRaises(PilotError):
+                self.manager.apply(n,probe=False)
+            self.assertFalse(list((self.state/'credentials/pending').glob('*.ini')))
+            self.assertFalse(list((self.state/'credentials').glob('*.ini')))
+
+    def test_success_registers_only_after_service_is_healthy_and_reuses_shared(self):
+        settings=self.staged();profile=settings['credential_id'];n=fixture('anytls')
+        n['tls'].update(mode='acme',challenge='dns-cloudflare',dns=settings)
+        def prepare(node,revision,*args):
+            node['tls'].update(certificate=str(revision/'certificate.pem'),key=str(revision/'key.pem'))
+        original=self.manager.services.restart
+        def restart(node):
+            self.assertFalse((self.state/'credentials'/(profile+'.ini')).exists())
+            original(node)
+        with patch('nodepilot_pkg.manager.port_free'),patch('nodepilot_pkg.certificates.prepare',side_effect=prepare), \
+             patch.object(self.manager.services,'restart',side_effect=restart):
+            saved=self.manager.apply(n,probe=False)
+        self.assertTrue(dns.credential_path(self.state,profile,pending=False).exists())
+        self.assertFalse(dns.audit(self.state)[0]['orphan'])
+        with self.assertRaises(PilotError):dns.cleanup_orphans(self.state,[profile],confirmed=True)
+        self.assertNotIn(self.token,json.dumps(saved))
+
+    def test_old_revision_backup_adoption_and_transaction_pin_shared_token(self):
+        profile=dns.store_token(self.state,self.token)
+        for directory in ('backups','adoptions','nodes/test/revisions/r-test'):
+            path=self.state/directory;path.mkdir(parents=True,exist_ok=True)
+            entry=path/'record.json';atomic_json(entry,{'dns':{'credential_id':profile}})
+            with self.assertRaises(PilotError):dns.cleanup_orphans(self.state,[profile],confirmed=True)
+            entry.unlink()
+        atomic_json(self.state/'uninstall.json',{'dns':{'credential_id':profile}})
+        with self.assertRaises(PilotError):dns.cleanup_orphans(self.state,[profile],confirmed=True)
+
+    def test_orphan_audit_readonly_cleanup_confirmed_and_corruption_refuses(self):
+        profile=dns.store_token(self.state,self.token);path=dns.credential_path(self.state,profile)
+        self.assertTrue(dns.audit(self.state)[0]['orphan']);self.assertTrue(path.exists())
+        with self.assertRaises(PilotError):dns.cleanup_orphans(self.state,[profile])
+        broken=self.state/'backups/broken.json';broken.write_text('{')
+        with self.assertRaises(PilotError):dns.cleanup_orphans(self.state,[profile],confirmed=True)
+        self.assertTrue(path.exists());broken.unlink()
+        atomic_json(broken,{'schema':99,'future_credential_reference':profile})
+        with self.assertRaises(PilotError):dns.cleanup_orphans(self.state,[profile],confirmed=True)
+        broken.unlink()
+        dns.cleanup_orphans(self.state,[profile],confirmed=True);self.assertFalse(path.exists())
+
+    def test_current_transaction_blocks_pending_cleanup_even_if_owner_dead(self):
+        settings=self.staged();node=self.state/'nodes/test';node.mkdir()
+        atomic_json(node/'pending.json',{'dns':settings})
+        with patch('nodepilot_pkg.dns_credentials.owner_alive',return_value=False),self.assertRaises(PilotError):
+            dns.recover_pending(self.state)
+        self.assertTrue(dns.credential_path(self.state,settings['credential_id']).exists())
+
+    def test_legacy_owner_migrates_and_future_owner_is_refused(self):
+        (self.state/'.owner').write_text(LEGACY_OWNER);self.manager.initialize()
+        self.assertEqual((self.state/'.owner').read_text(),OWNER)
+        (self.state/'.owner').write_text('NodePilot schema=99\n')
+        with self.assertRaises(PilotError):self.manager.initialize()
+
+
+class TargetRC2Tests(unittest.TestCase):
+    def test_server_and_peer_output_only_accept_exact_classical_group(self):
+        from nodepilot_pkg.targets import tls_handshake
+        for label in ('Server','Peer'):
+            for group in ('X25519','X25519MLKEM768','X25519-unknown','unknown'):
+                output=f'TLSv1.3\n{label} Temp Key: {group}, 253 bits\nALPN protocol: h2\nVerify return code: 0 (ok)'.encode()
+                with patch('nodepilot_pkg.targets.run_openssl',return_value=CompletedProcess([],0,output,b'')):
+                    if group=='X25519':self.assertEqual(tls_handshake('8.8.8.8',443,'example.com')['group'],'X25519')
+                    else:
+                        with self.assertRaisesRegex(PilotError,'未验证'):tls_handshake('8.8.8.8',443,'example.com')
+
+    def test_manual_fixed_ip_failure_and_dns_drift_never_change_node(self):
+        from nodepilot_pkg.targets import recheck_target,target_status
+        n=fixture();n['reality']['target']='8.8.8.8:443';original=copy.deepcopy(n)
+        with tempfile.TemporaryDirectory() as d, patch('nodepilot_pkg.targets.resolve',return_value=(['8.8.4.4'],set())), \
+             patch('nodepilot_pkg.targets.cloudflare_networks',return_value=[]), \
+             patch('nodepilot_pkg.targets.inspect_target',side_effect=PilotError('TLS failed')):
+            result=recheck_target(Path(d),n)
+            self.assertTrue(result['dns_drift']);self.assertIn('检测失败',target_status(Path(d),n))
+            self.assertEqual(n,original)
+            n['reality']['target']='8.8.4.4:443'
+            self.assertIn('尚未检测',target_status(Path(d),n))
+
+
+class DnsProcessCleanupTests(unittest.TestCase):
+    def test_timeout_requests_plugin_cleanup_then_escalates_without_output(self):
+        import signal
+        import subprocess
+        from nodepilot_pkg.common import run_with_cleanup
+        for delayed in (False,True):
+            process=MagicMock()
+            process.wait.side_effect=[subprocess.TimeoutExpired('certbot',1),0] if not delayed else [
+                subprocess.TimeoutExpired('certbot',1),subprocess.TimeoutExpired('certbot',20),0]
+            with patch('nodepilot_pkg.common.subprocess.Popen',return_value=process),self.assertRaisesRegex(PilotError,'TXT'):
+                run_with_cleanup(['python3','redacting_runner'],1)
+            process.send_signal.assert_called_once_with(signal.SIGTERM)
+            self.assertEqual(process.kill.called,delayed)
+
+    def test_interrupt_requests_cleanup_and_preserves_interrupt(self):
+        from nodepilot_pkg.common import run_with_cleanup
+        process=MagicMock();process.wait.side_effect=[KeyboardInterrupt(),0]
+        with patch('nodepilot_pkg.common.subprocess.Popen',return_value=process),self.assertRaises(KeyboardInterrupt):
+            run_with_cleanup(['python3','redacting_runner'],10)
+        process.send_signal.assert_called_once()
+
+
+@unittest.skipUnless(os.name=='posix' and __import__('shutil').which('openssl'),'Linux/OpenSSL certificates')
+class CertificateRecoveryRC2Tests(unittest.TestCase):
+    def test_renewal_install_reload_failure_and_restore_rebind(self):
+        from nodepilot_pkg.common import run
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);m=Manager(root/'state',FakeCores(),FakeServices(root/'units'));m.initialize()
+            def pair(name,days):
+                key=root/(name+'.key');cert=root/(name+'.pem')
+                run(['openssl','req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes',
+                    '-days',str(days),'-subj','/CN=example.com','-addext','subjectAltName=DNS:example.com','-keyout',key,'-out',cert])
+                return cert,key
+            cert,key=pair('original',1);newcert,newkey=pair('new',90)
+            n=fixture('anytls');n['tls'].update(mode='import',certificate=str(cert),key=str(key))
+            with patch('nodepilot_pkg.manager.port_free'):
+                old=m.apply(n,probe=False);oldrevision=m.revision(n['id'])
+                profile=dns.store_token(m.state,'test_only_'+'z'*30)
+                changed=copy.deepcopy(old);changed['tls'].update(mode='acme',challenge='dns-cloudflare',
+                    dns={'credential_id':profile,'zone_id':'0'*32,'propagation_seconds':60})
+                self.assertTrue(certificates.due(changed))
+                self.assertEqual(certificates.information(old,m.state)['status'],'临期')
+                m.services.fail_next=True
+                with patch('nodepilot_pkg.certificates.acme',return_value=(newcert,newkey)),self.assertRaises(PilotError):
+                    m.apply(changed,probe=False,renew=True)
+                self.assertEqual(m.get(n['id']),old);self.assertEqual(m.revision(n['id']),oldrevision)
+                self.assertEqual(Path(old['tls']['certificate']).read_bytes(),cert.read_bytes())
+                self.assertTrue(m.services.active(old))
+                self.assertIn('失败',read_json(m.state/'certificate-status'/(n['id']+'.json'))['status'])
+                with patch('nodepilot_pkg.certificates.acme',return_value=(newcert,newkey)):
+                    installed=m.apply(changed,probe=False,renew=True)
+                self.assertFalse(certificates.due(installed));self.assertTrue(m.services.active(installed))
+                self.assertEqual(Path(installed['tls']['certificate']).read_bytes(),newcert.read_bytes())
+                expired=root/'expired.pem'
+                run(['openssl','x509','-in',newcert,'-signkey',newkey,'-days','0','-out',expired])
+                expired_node=copy.deepcopy(installed);expired_node['tls'].update(certificate=str(expired),key=str(newkey))
+                self.assertEqual(certificates.information(expired_node,m.state)['status'],'已过期')
+                self.assertTrue(certificates.due(expired_node))
+                with patch('nodepilot_pkg.certificates.acme',return_value=(newcert,newkey)):
+                    installed=m.apply(expired_node,probe=False)
+                self.assertFalse(certificates.due(installed))
+                backup=m.backup()
+                other=Manager(root/'other',FakeCores(),FakeServices(root/'other-units'));other.initialize()
+                with patch('nodepilot_pkg.manager.probe_reality'):
+                    restored=other.restore(backup)
+                recovered=other.get(restored[0]);self.assertEqual(recovered['tls']['mode'],'import')
+                self.assertNotIn('dns',recovered['tls']);self.assertNotIn('challenge',recovered['tls'])
+                self.assertFalse(certificates.due(recovered))
+            with self.assertRaises(PilotError):certificates.validate_pair(cert,newkey,'example.com')
+            with self.assertRaises(PilotError):certificates.validate_pair(cert,key,'other.example.com')
+            cert.write_text('broken')
+            with self.assertRaises(PilotError):certificates.validate_pair(cert,key,'example.com')
+
+
+class ProgramRecoveryTests(unittest.TestCase):
+    def test_durable_upgrade_finishes_after_each_interruption_and_is_idempotent(self):
+        from nodepilot_pkg.deploy import recover_program
+        from nodepilot_pkg.installation import LAUNCHER,RENEW_TIMER
+        for crash in ('switch','launcher','timer'):
+            with tempfile.TemporaryDirectory() as d:
+                base=Path(d);root=base/'program';app=root/'app';app.mkdir(parents=True)
+                units=base/'units';units.mkdir();launcher=base/'nodepilot'
+                (root/'.owner').write_text(LEGACY_OWNER)
+                old=app/('a'*64);old.mkdir();(old/'files.json').write_text('{"schema":1,"files":[]}')
+                new=app/('b'*64);new.mkdir();(new/'nodepilot').write_text('candidate')
+                atomic_json(new/'files.json',{'schema':1,'recovery_schema':2,'files':['nodepilot'],
+                    'hashes':{'nodepilot':hashlib.sha256(b'candidate').hexdigest()}})
+                current=app/'current';current.symlink_to(old.name,target_is_directory=True)
+                record={'schema':2,'phase':'installing','root':str(root),'launcher':str(launcher),'units':str(units),
+                        'destination':new.name,'old':old.name,'repository':''}
+                atomic_json(root/'program-pending.json',record)
+                from nodepilot_pkg import deploy
+                original=deploy.atomic_bytes
+                def write(path,data,**kwargs):
+                    if (crash=='launcher' and path==launcher) or (crash=='timer' and path.name.endswith('.timer')):
+                        raise SystemExit('simulated power loss')
+                    return original(path,data,**kwargs)
+                with patch('nodepilot_pkg.deploy.run',return_value=''):
+                    if crash=='switch':
+                        with patch('nodepilot_pkg.deploy.os.replace',side_effect=SystemExit('power loss')),self.assertRaises(SystemExit):
+                            recover_program(root,launcher,units)
+                    else:
+                        with patch('nodepilot_pkg.deploy.atomic_bytes',side_effect=write),self.assertRaises(SystemExit):
+                            recover_program(root,launcher,units)
+                    self.assertTrue(recover_program(root,launcher,units))
+                    self.assertFalse(recover_program(root,launcher,units))
+                self.assertEqual(current.resolve(),new)
+                self.assertEqual(launcher.read_text(),LAUNCHER)
+                self.assertIn('OnBootSec=2min',RENEW_TIMER)
+                self.assertEqual((root/'.owner').read_text(),OWNER)
+                self.assertTrue(old.is_dir())
+
+    def test_tampered_candidate_is_never_executed(self):
+        from nodepilot_pkg.deploy import recover_program
+        with tempfile.TemporaryDirectory() as d:
+            base=Path(d);root=base/'program';new=root/'app'/('b'*64);new.mkdir(parents=True)
+            units=base/'units';units.mkdir();launcher=base/'nodepilot';(root/'.owner').write_text(OWNER)
+            (new/'nodepilot').write_text('tampered')
+            atomic_json(new/'files.json',{'schema':1,'recovery_schema':2,'files':['nodepilot'],'hashes':{'nodepilot':'0'*64}})
+            atomic_json(root/'program-pending.json',{'schema':2,'phase':'installing','root':str(root),'launcher':str(launcher),
+                'units':str(units),'destination':new.name,'old':None,'repository':''})
+            with patch('nodepilot_pkg.deploy.run',return_value='') as command,self.assertRaisesRegex(PilotError,'校验失败'):
+                recover_program(root,launcher,units)
+            self.assertFalse(any(c.args[0][0]=='python3' for c in command.call_args_list))
+            self.assertFalse(launcher.exists());self.assertTrue((root/'program-pending.json').exists())
+
+    def test_unknown_schema_and_paths_refuse_before_mutating(self):
+        from nodepilot_pkg.deploy import recover_program
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);(root/'.owner').write_text(OWNER)
+            atomic_json(root/'program-pending.json',{'schema':99})
+            with patch('nodepilot_pkg.deploy.run',return_value=''),self.assertRaises(PilotError):
+                recover_program(root,root/'nodepilot',root)
+            self.assertTrue((root/'program-pending.json').exists())
+
+
+@unittest.skipUnless(os.name=='posix','durable node revisions')
+class CaddyRollbackRC2Tests(unittest.TestCase):
+    def test_partial_node_delete_survives_loss_of_inner_pending_file(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);m=Manager(root/'state',FakeCores(),FakeServices(root/'units'));m.initialize()
+            with patch('nodepilot_pkg.manager.port_free'):
+                first=m.apply(fixture(),probe=False);second=m.apply(fixture(port=8443),probe=False)
+            original=shutil.rmtree;path=m.node_dir(first['id'])
+            def partial(target,*args,**kwargs):
+                if Path(target)==path:
+                    (path/'pending.json').unlink(missing_ok=True)
+                    (path/'current').unlink(missing_ok=True)
+                    raise OSError('simulated partial delete')
+                return original(target,*args,**kwargs)
+            with patch('nodepilot_pkg.manager.shutil.rmtree',side_effect=partial),self.assertRaises(OSError):
+                m.delete(first['id'])
+            self.assertTrue((m.state/'deletions'/(first['id']+'.json')).exists())
+            m.recover();m.recover()
+            self.assertFalse(path.exists());self.assertEqual(m.nodes(),[second]);self.assertTrue(m.services.active(second))
+
+    def test_core_recovery_restores_exact_previous_caddy_bytes(self):
+        import base64
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);cores=FakeCores();cores.root=root/'cores';cores.switch=MagicMock()
+            old=cores.root/'caddy/old';old.mkdir(parents=True)
+            m=Manager(root/'state',cores,FakeServices(root/'units'));m.initialize();m.caddy=MagicMock()
+            data=b'{"legacy":"unchanged"}'
+            atomic_json(m.state/'core-pending.json',{'schema':2,'core':'caddy','old':str(old),
+                'caddy_previous':base64.b64encode(data).decode()})
+            m.recover_core();m.recover_core()
+            m.caddy.restore_configuration.assert_called_once_with(data)
+
+    def test_power_loss_restores_exact_legacy_caddy_configuration(self):
+        from test_caddy import self_node
+        from nodepilot_pkg.common import private_dir
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);services=FakeServices(root/'units');m=Manager(root/'state',FakeCores(),services);m.initialize()
+            m.caddy=MagicMock()
+            with patch('nodepilot_pkg.manager.port_free'):
+                original=m.apply(self_node(),probe=False)
+                config=private_dir(m.state/'caddy')/'config.json';old_data=b'{"legacy":"exact configuration bytes"}'
+                config.write_bytes(old_data);(services.units/'nodepilot-caddy.service').write_text('owned fixture')
+                changed=copy.deepcopy(original);changed['port']=18443
+                with patch.object(services,'restart',side_effect=SystemExit('power loss')),self.assertRaises(SystemExit):
+                    m.apply(changed,probe=False)
+                self.assertTrue((m.node_dir(original['id'])/'pending.json').exists())
+                m.recover()
+                self.assertEqual(m.get(original['id']),original)
+                m.caddy.restore_configuration.assert_called_once_with(old_data)
+                self.assertFalse((m.node_dir(original['id'])/'pending.json').exists())
+
+
+if __name__=='__main__':unittest.main()

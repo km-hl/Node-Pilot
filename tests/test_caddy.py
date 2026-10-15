@@ -44,7 +44,7 @@ class CaddyConfigTests(unittest.TestCase):
         issuer = tls["automation"]["policies"][0]["issuers"][0]
         self.assertNotIn("email", issuer)
         self.assertTrue(issuer["challenges"]["tls-alpn"]["disabled"])
-        self.assertEqual(config["apps"]["http"]["servers"]["http01"]["listen"], [":80"])
+        self.assertEqual(config["apps"]["http"]["servers"]["http01"]["listen"], ['tcp4/0.0.0.0:80','tcp6/[::]:80'])
 
     def test_multiple_nodes_keep_separate_listener_and_one_http01_server(self):
         a, b = self_node(), self_node(port=14444, local=18004)

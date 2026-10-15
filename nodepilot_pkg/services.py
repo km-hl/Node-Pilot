@@ -73,7 +73,9 @@ class Services:
             except ValueError:
                 raise PilotError('systemd 状态字段无效。')
         fields['listening'] = listening(n,fields['MainPID']) if fields['MainPID'] > 1 else False
-        if fields.get('ActiveState') != 'active' or fields.get('Result') not in {'success',''} or fields['ExecMainStatus']:
+        if fields.get('ActiveState')=='activating' or fields.get('SubState')=='auto-restart':
+            fields['state']='服务正在重启；检查本机日志和端口冲突'
+        elif fields.get('ActiveState') != 'active' or fields.get('Result') not in {'success',''} or fields['ExecMainStatus']:
             fields['state'] = '服务启动失败/未运行'
         elif fields['NRestarts']:
             fields['state'] = '服务发生异常重启'
@@ -108,7 +110,7 @@ class Services:
         return run(["journalctl", "-u", n["service"], "-n", "60", "--no-pager"], timeout=15)
 
 
-def listening(n, pid, proc=Path('/proc')):
+def listening(n, pid, proc=Path('/proc'), strict_family=False):
     """Require the configured socket to belong to this service's main process."""
     try:
         sockets = set()
@@ -131,6 +133,8 @@ def listening(n, pid, proc=Path('/proc')):
                 raw = bytes.fromhex(address)
                 raw = raw[::-1] if len(raw)==4 else b''.join(raw[i:i+4][::-1] for i in range(0,16,4))
                 actual, wanted = ipaddress.ip_address(raw), ipaddress.ip_address(n['listen'])
+                if strict_family and actual.version != wanted.version:
+                    continue
                 if actual == wanted or actual.is_unspecified or (actual.version==6 and actual.ipv4_mapped==wanted):
                     return True
     except (OSError, ValueError, IndexError):

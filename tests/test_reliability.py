@@ -25,12 +25,11 @@ class HttpFamiliesTests(unittest.TestCase):
              patch('nodepilot_pkg.caddy.public_ips'),patch('nodepilot_pkg.caddy.port_free') as bind:
             c.preflight(n,None,[])
         self.assertEqual([call.args[0] for call in bind.call_args_list],['127.0.0.1','0.0.0.0'])
-        self.assertEqual(configuration([n],'/test')['apps']['http']['servers']['http01']['listen'],['0.0.0.0:80'])
+        self.assertEqual(configuration([n],'/test')['apps']['http']['servers']['http01']['listen'],['tcp4/0.0.0.0:80'])
 
     def test_only_published_families_require_port_80(self):
         for addresses, expected in (({'8.8.8.8'}, ['0.0.0.0']),
-                                    ({'2001:4860:4860::8888'}, ['::']),
-                                    ({'8.8.8.8', '2001:4860:4860::8888'}, ['0.0.0.0', '::'])):
+                                    ({'2001:4860:4860::8888'}, ['::'])):
             n = fixture('anytls')
             n['tls'].update(mode='acme', domain=n['sni'])
             with patch('nodepilot_pkg.certificates.dns_matches', return_value=addresses), \

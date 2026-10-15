@@ -15,7 +15,9 @@ from tools.caddy_smoke import manager_at
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--duration',type=int,default=24);args=p.parse_args();root_required()
+    p=argparse.ArgumentParser();p.add_argument('--duration',type=int,default=24)
+    p.add_argument('--limit',type=int,choices=(256,512,1024),help='只复测指定 cgroup 上限；默认全部')
+    args=p.parse_args();root_required()
     if not 18<=args.duration<=60:p.error('duration 18..60')
     state=state_path();m=manager_at(state);nodes=read_json(state/'test-nodes.json')['nodes']
     results=[];report=state/'resource-matrix.json'
@@ -24,7 +26,7 @@ def main():
             m.services.assert_owned(n);run(['systemctl','stop',n['service']])
         m.caddy.assert_owned();run(['systemctl','stop','nodepilot-caddy.service'])
     try:
-        for limit in (256,512,1024):
+        for limit in ((args.limit,) if args.limit else (256,512,1024)):
             for protocol in ('reality','anytls','hysteria2','all'):
                 unit='nodepilot-resource-v04-'+secrets.token_hex(6)
                 worker=[sys.executable,str(ROOT/'tools/resource_probe.py'),'--private-dir',str(state),'--state-dir',str(state),

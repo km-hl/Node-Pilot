@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from .common import PilotError, atomic_bytes, atomic_json, read_json, run
-from .manager import OWNER
+from .manager import LEGACY_OWNER, OWNER
 
 RENEW_SERVICE = """# NodePilot certificate renewal schema=1
 [Unit]
@@ -15,7 +15,7 @@ Type=oneshot
 UMask=0077
 ExecStart=/usr/local/bin/nodepilot renew
 """
-RENEW_TIMER = """# NodePilot certificate renewal schema=1
+LEGACY_RENEW_TIMER = """# NodePilot certificate renewal schema=1
 [Unit]
 Description=NodePilot certificate renewal timer
 [Timer]
@@ -25,7 +25,12 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 """
+RENEW_TIMER = LEGACY_RENEW_TIMER.replace('OnCalendar=', 'OnBootSec=2min\nOnCalendar=', 1)
 LAUNCHER = "#!/usr/bin/env bash\n# NodePilot owned launcher schema=1\nexec python3 /opt/nodepilot/app/current/nodepilot \"$@\"\n"
+
+
+def owned_unit(text, expected):
+    return text == expected or (expected == RENEW_TIMER and text == LEGACY_RENEW_TIMER)
 
 
 def preflight_program(root):
@@ -118,13 +123,13 @@ def empty_dir(path):
 def uninstall(manager, root=Path("/opt/nodepilot"), launcher=Path("/usr/local/bin/nodepilot"), units=Path("/etc/systemd/system")):
     root, launcher, units = Path(root), Path(launcher), Path(units)
     marker = root / ".owner"
-    if root.is_symlink() or marker.is_symlink() or not marker.is_file() or marker.read_text() != OWNER:
+    if root.is_symlink() or marker.is_symlink() or not marker.is_file() or marker.read_text() not in {OWNER, LEGACY_OWNER}:
         raise PilotError("程序目录缺少所有权标记，拒绝卸载。")
     if launcher.is_symlink() or not launcher.is_file() or launcher.read_text() != LAUNCHER:
         raise PilotError("管理命令不是本项目创建，拒绝删除。")
     for name, content in (("nodepilot-renew.service", RENEW_SERVICE), ("nodepilot-renew.timer", RENEW_TIMER)):
         path = units / name
-        if path.is_symlink() or (path.exists() and path.read_text() != content):
+        if path.is_symlink() or (path.exists() and not owned_unit(path.read_text(),content)):
             raise PilotError("证书续期单元不是本项目创建。")
         if path.exists() and run(["systemctl", "show", name, "-p", "DropInPaths", "--value"]):
             raise PilotError("续期单元存在外部 drop-in，拒绝自动卸载。")
@@ -195,7 +200,7 @@ def finish_uninstall(manager, record):
     # A repaired installation may have recreated the timer: check before touching it.
     for name, content in (("nodepilot-renew.service", RENEW_SERVICE), ("nodepilot-renew.timer", RENEW_TIMER)):
         path = units / name
-        if path.is_symlink() or (path.exists() and path.read_text() != content):
+        if path.is_symlink() or (path.exists() and not owned_unit(path.read_text(),content)):
             raise PilotError("最终清理遇到外部续期单元；保留卸载记录。")
         if path.exists():
             if run(["systemctl", "show", name, "-p", "DropInPaths", "--value"]):
@@ -207,7 +212,7 @@ def finish_uninstall(manager, record):
     if launcher.is_symlink() or (launcher.exists() and launcher.read_text() != LAUNCHER):
         raise PilotError("管理命令已被外部修改；保留卸载记录。")
     if root.exists():
-        if root.is_symlink() or (root / ".owner").is_symlink() or (root / ".owner").read_text() != OWNER:
+        if root.is_symlink() or (root / ".owner").is_symlink() or (root / ".owner").read_text() not in {OWNER, LEGACY_OWNER}:
             raise PilotError("程序目录所有权变化；保留卸载记录。")
         remove_program_files(root)
     launcher.unlink(missing_ok=True)
@@ -248,7 +253,7 @@ def recover_uninstall(manager, root=Path("/opt/nodepilot"), launcher=Path("/usr/
         run(["systemctl", "stop", "nodepilot-caddy.service"])
     for name, content in (("nodepilot-renew.service", RENEW_SERVICE), ("nodepilot-renew.timer", RENEW_TIMER)):
         unit = Path(units) / name
-        if unit.is_symlink() or (unit.exists() and unit.read_text() != content) or run(["systemctl", "show", name, "-p", "DropInPaths", "--value"]):
+        if unit.is_symlink() or (unit.exists() and not owned_unit(unit.read_text(),content)) or run(["systemctl", "show", name, "-p", "DropInPaths", "--value"]):
             raise PilotError("恢复遇到外部续期单元；保留记录。")
         if record["renew"][name]:
             atomic_bytes(unit, content.encode(), mode=0o644)

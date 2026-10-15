@@ -51,10 +51,15 @@ def configuration(nodes, state):
     if automate:
         # Caddy handles HTTP-01 on this shared server; Xray retains its public port.
         bindings = {address for n in nodes if own_target(n) and n["caddy"]["certificate_mode"] == "acme"
-                    for address in n["caddy"].get("http01_listen", [":80"])}
-        # A dual-stack wildcard covers IPv4 too; avoid overlapping listeners.
-        if ":80" in bindings or "[::]:80" in bindings:
-            bindings = {"[::]:80" if "[::]:80" in bindings else ":80"}
+                    for address in n["caddy"].get("http01_listen", ["tcp4/0.0.0.0:80", "tcp6/[::]:80"])}
+        # Migrate legacy metadata without depending on IPV6_V6ONLY defaults.
+        migrated = set()
+        for address in bindings:
+            if address in {':80', '[::]:80'}:
+                migrated.update({'tcp4/0.0.0.0:80', 'tcp6/[::]:80'})
+            else:
+                migrated.add('tcp4/0.0.0.0:80' if address=='0.0.0.0:80' else address)
+        bindings = migrated
         servers["http01"] = {"listen": sorted(bindings), "protocols": ["h1"],
                              "routes": [{"handle": [{"handler": "static_response", "status_code": 404}]}]}
     return {"admin": {"listen": "unix/" + (state / "admin.sock").as_posix(), "config": {"persist": False}},
@@ -120,15 +125,34 @@ class Caddy:
                 try:
                     files = self.certificate_files(old)
                     validate_pair(files["certificate.pem"], files["key.pem"], n["sni"])
-                    return
+                    # A reusable certificate does not prove future challenge listeners.
+                    pass
                 except PilotError:
                     pass
             bindings = http01_bindings(dns_matches(n["sni"], public_ips()))
-            c["http01_listen"] = ["[::]:80" if address == "::" else "0.0.0.0:80" for address in bindings]
-            existing_acme = any(own_target(o) and o["caddy"]["certificate_mode"] == "acme" for o in others)
-            if not existing_acme or not self.active():
-                for address in bindings:
-                    port_free(address, 80, "tcp")
+            c["http01_listen"] = ["tcp6/[::]:80" if address == "::" else "tcp4/0.0.0.0:80" for address in bindings]
+            existing = [o for o in others if own_target(o) and o['caddy']['certificate_mode']=='acme']
+            for address, listener in zip(bindings, c['http01_listen']):
+                legacy = '0.0.0.0:80' if address=='0.0.0.0' else '[::]:80'
+                if self.active() and any(listener in o['caddy'].get('http01_listen',[]) or legacy in o['caddy'].get('http01_listen',[]) for o in existing):
+                    self.verify_http_listener(address)
+                else:
+                    port_free(address, 80, "tcp", v6only=True)
+
+    def verify_http_listener(self, address):
+        """A local family-specific connection proves only the local listener."""
+        import socket
+        from .services import listening
+        pid = int(run(['systemctl','show',UNIT,'-p','MainPID','--value']) or '0')
+        if not listening({'listen':address,'port':80,'transport':'tcp'}, pid, strict_family=True):
+            raise PilotError('Caddy HTTP-01 监听归属/地址族未验证；检查服务，或改用 DNS-01。')
+        family = socket.AF_INET6 if address=='::' else socket.AF_INET
+        try:
+            with socket.socket(family,socket.SOCK_STREAM) as sock:
+                sock.settimeout(2)
+                sock.connect(('::1' if family==socket.AF_INET6 else '127.0.0.1',80))
+        except OSError:
+            raise PilotError('Caddy HTTP-01 本机分族连接失败；检查监听或使用 DNS-01。') from None
 
     def prepare(self, n, revision, renew=False):
         if own_target(n) and n["caddy"]["certificate_mode"] != "acme":
@@ -175,6 +199,8 @@ class Caddy:
             return
         data = self.check(nodes)
         config = self.state / "caddy/config.json"
+        if config.is_symlink():
+            raise PilotError('Caddy 配置为外部链接，拒绝覆盖。')
         previous = config.read_bytes() if config.exists() else None
         installed = path.exists()
         try:
@@ -184,6 +210,10 @@ class Caddy:
                 run(["systemctl", "daemon-reload"])
                 run(["systemctl", "enable", UNIT])
             self.load(restart)
+            import json
+            listeners=json.loads(data)['apps']['http']['servers'].get('http01',{}).get('listen',[])
+            for address in listeners:
+                self.verify_http_listener('::' if address.startswith('tcp6/') else '0.0.0.0')
         except (Exception, KeyboardInterrupt):
             if previous is not None:
                 atomic_bytes(config, previous)
@@ -195,6 +225,26 @@ class Caddy:
                 path.unlink()
                 run(["systemctl", "daemon-reload"])
             raise
+
+    def restore_configuration(self, data):
+        """Restore exact pre-transaction bytes, including legacy listener semantics."""
+        self.assert_owned(missing=True)
+        if len(data)>256*1024:
+            raise PilotError('Caddy 回滚配置超过上限。')
+        directory=private_dir(self.state/'caddy')
+        candidate=directory/'rollback.json'
+        atomic_bytes(candidate,data)
+        try:
+            run([self.cores.binary('caddy'),'validate','--config',candidate])
+        finally:
+            candidate.unlink(missing_ok=True)
+        atomic_bytes(directory/'config.json',data)
+        path=self.units/UNIT
+        if not path.exists():
+            atomic_bytes(path,self.content().encode(),mode=0o644)
+            run(['systemctl','daemon-reload'])
+            run(['systemctl','enable',UNIT])
+        self.load()
 
     def ready(self, n, timeout=180):
         c = n["caddy"]

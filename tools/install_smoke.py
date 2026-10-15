@@ -15,10 +15,10 @@ from nodepilot_pkg.installation import uninstall
 from nodepilot_pkg.manager import Manager
 
 
-def tty_command(command, replies=("0",), timeout=120):
+def tty_command(command, replies=("0",), timeout=120, cwd=ROOT):
     pid, fd = pty.fork()
     if pid == 0:
-        os.chdir(ROOT)
+        os.chdir(cwd)
         os.execvp(command[0], command)
     received, sent, completed = bytearray(), 0, False
     start = time.monotonic()
@@ -60,6 +60,10 @@ def tty_command(command, replies=("0",), timeout=120):
 
 
 def main():
+    import argparse
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--legacy-source',type=Path,help='可信 v0.3.0 Git 源码目录；先安装旧版再升级候选')
+    args=parser.parse_args()
     root_required()
     paths = [Path("/opt/nodepilot"), Path("/etc/nodepilot"), Path("/usr/local/bin/nodepilot"),
              Path("/etc/systemd/system/nodepilot-renew.service"), Path("/etc/systemd/system/nodepilot-renew.timer")]
@@ -67,7 +71,8 @@ def main():
         raise SystemExit("拒绝在已有 NodePilot 安装上执行破坏性安装测试。")
     manager = Manager()
     try:
-        tty_command(["bash", "install.sh", "--local"])
+        first_installer=str(args.legacy_source.resolve()/'install.sh') if args.legacy_source else 'install.sh'
+        tty_command(["bash", first_installer, "--local"],cwd=args.legacy_source.resolve() if args.legacy_source else ROOT)
         print("local install automatically opens TTY menu OK")
         sentinel = Path("/etc/nodepilot/.smoke-sentinel")
         sentinel.write_text("preserve")
@@ -78,6 +83,15 @@ def main():
         tty_command(["bash", "install.sh", "--local", "--upgrade"])
         assert sentinel.read_text() == "preserve"
         print("local script upgrade preserves state OK")
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='nodepilot-shadow-') as tmp:
+            shadow=Path(tmp)/'nodepilot_pkg';shadow.mkdir()
+            (shadow/'__init__.py').write_text("raise RuntimeError('unverified cwd imported')")
+            tty_command(['bash',str(ROOT/'install.sh'),'--local','--upgrade'],cwd=tmp)
+        print('verified installer ignores shadow package in current directory OK')
+        assert run(['nodepilot','--version'])=='0.4.0'
+        if args.legacy_source:
+            print('trusted v0.3.0 installer -> candidate schema upgrade OK')
         text = tty_command(["nodepilot", "menu"], replies=("invalid", "0"))
         assert "无效选项" in text
         print("invalid menu input loops OK")

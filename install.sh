@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 PAYLOAD_URL='https://github.com/km-hl/Node-Pilot/releases/download/v0.4.0/nodepilot-0.4.0.tar.gz'
-PAYLOAD_SHA256='0dca62f880261fc2b744e330828ef9f7e05f0ce6312790c9d467cedb5bc4bd4a'
+PAYLOAD_SHA256='d31e144356bdb9fad735195e29fdbc80c075c7cc544b7af8529683207acac621'
 LOCAL=0
 UPGRADE=0
 for arg in "$@"; do
@@ -31,7 +31,10 @@ exec 3<>/dev/tty || fail '无法打开 /dev/tty。'
 
 if [[ -e /usr/local/bin/nodepilot && $UPGRADE -eq 0 ]]; then
     [[ -f /opt/nodepilot/.owner && ! -L /opt/nodepilot/.owner && ! -L /opt/nodepilot ]] || fail '现有同名程序不属于 NodePilot。'
-    [[ $(cat /opt/nodepilot/.owner) == 'NodePilot schema=1' ]] || fail '所有权标记不匹配。'
+    case "$(cat /opt/nodepilot/.owner)" in
+        'NodePilot schema=1'|'NodePilot schema=2') ;;
+        *) fail '所有权 schema 不兼容，请使用适配现有事务的新安装器。' ;;
+    esac
     [[ ! -L /usr/local/bin/nodepilot ]] || fail '拒绝同名符号链接。'
     expected_launcher='#!/usr/bin/env bash
 # NodePilot owned launcher schema=1
@@ -98,7 +101,8 @@ with tarfile.open(archive, 'r:gz') as t:
         raise SystemExit('不完整项目包')
 PY
 python3 "$workspace/payload/nodepilot" self-check || fail '管理器自检失败。'
-PYTHONPATH="$workspace/payload" python3 -m nodepilot_pkg.deploy "$workspace/payload" "$PAYLOAD_SHA256" "$PAYLOAD_URL" || fail '部署失败，未报告成功。'
+python3 -I -c 'import runpy,sys; sys.path.insert(0,sys.argv[1]); sys.argv=sys.argv[1:]; runpy.run_module("nodepilot_pkg.deploy",run_name="__main__")' \
+    "$workspace/payload" "$workspace/payload" "$PAYLOAD_SHA256" "$PAYLOAD_URL" || fail '部署失败，未报告成功。'
 printf '%s\n' 'NodePilot 安装完成，立即进入菜单。按协议选择时安装官方校验内核。' >&3
 # Clean temporary files before exec: EXIT traps do not run after exec.
 rm -rf -- "$workspace"
