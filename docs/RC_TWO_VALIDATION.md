@@ -19,7 +19,7 @@
 
 ## 实际验证与证据范围
 
-最终本地单元/配置/安全/事务测试 147 项通过，包含本轮新增 26 项测试。证书测试使用真实 OpenSSL PEM：临期、已过期、正常更新、加载失败恢复、损坏 PEM、私钥/SNI 不匹配、跨机恢复去除 DNS 引用；CA 返回使用故障注入，不能称为真实签发。程序在切换链接、写 launcher、写 timer 时注入进程终止，重复恢复通过；篡改候选文件拒绝执行。删除中途丢失内部 pending 文件后，外部事务日志恢复通过。
+最终本地单元/配置/安全/事务测试 148 项通过，包含本轮新增 27 项测试。证书测试使用真实 OpenSSL PEM：临期、已过期、正常更新、加载失败恢复、损坏 PEM、私钥/SNI 不匹配、跨机恢复去除 DNS 引用；CA 返回使用故障注入，不能称为真实签发。程序在切换链接、写 launcher、写 timer 时注入进程终止，重复恢复通过；篡改候选文件拒绝执行。删除中途丢失内部 pending 文件后，外部事务日志恢复通过。
 
 已执行：
 
@@ -39,7 +39,7 @@ python3 tools/install_smoke.py --legacy-source <可信-v0.3.0-Git-源码目录>
 - 官方 SHA-256、ELF、版本校验：Xray 26.3.27、sing-box 1.14.3、Caddy 2.11.7。8 项原生配置检查通过，Caddy HTTP 分族配置可解析；DNS-01 用有效测试 PEM，未访问真实 CF/CA。
 - 官方 Mihomo v1.19.32：三协议导出、IPv6、特殊字符经原生 parser；未冒充 Mihomo 实际连接/GUI 导入。此前三协议 sing-box 外部传输证据见 RC1 报告，不冒充本轮重跑。
 - 真实 Caddy 进程：IPv4、IPv6、双栈高端口 HTTP 响应与 PID/socket 归属通过。这只是本机监听，不能证明公网 TCP80、云安全组或 ACME。
-- 授权 Debian 13 amd64 VPS：最终 147 项通过。可信已安装 v0.3.0 程序创建三种临时节点，RC2 保持 metadata、URI、原生配置和 MainPID 监听；修改 AnyTLS 端口再恢复通过，旧管理器拒绝 schema=2；临时旧节点清理完成。
+- 授权 Debian 13 amd64 VPS：最终 148 项通过。可信已安装 v0.3.0 程序创建三种临时节点，RC2 保持 metadata、URI、原生配置和 MainPID 监听；修改 AnyTLS 端口再恢复通过，旧管理器拒绝 schema=2；临时旧节点清理完成。
 - 同一 VPS 的 RC2 三种独立服务及 TCP/UDP 监听、本机 Reality 代理 HTTPS 通过。注入签发网络失败保留旧证书/修订/监听；注入卸载第二服务失败后全部恢复；最终清理中断后续做通过。临时服务、证书、客户端测试资料和 payload 均清理，生产 NodePilot 保持 v0.3.0，x-ui active 且配置 SHA-256 与测试前一致。
 
 ## RC2 256MiB 复测
@@ -84,8 +84,8 @@ RC2 所有权标记为 `schema=2`，读取兼容旧 `schema=1` 节点和安装�
 
 仅生成本地可复现包及 SHA-256，安装器仍指向尚未发布的未来 v0.4.0 附件；main 稳定入口保持 v0.3.0。
 
-- 包 `nodepilot-0.4.0.tar.gz`：`d31e144356bdb9fad735195e29fdbc80c075c7cc544b7af8529683207acac621`。
-- installer：`47b617923503ffe0762b13e4bc50171b456e5095031ec32e9284403066ab8a68`。
-- 校验文件：`e418b2cad1ab1b904a0d213d6da5b27450a26bb97bfe2bd9b88ac5e664090658`。
+- 包 `nodepilot-0.4.0.tar.gz`：`ba7a7c40340c6cf4dd4beaa11c728913019e8d6c6d479242e55a04f1ee5b0917`。
+- installer：`f5b8d9cc1dc96b3845b9836a05bd212c52512a5f4896a1f2447bf53bfdff01a5`。
+- 校验文件：`6889a5468e6cd44ddde0740efc7af6649adbe6acf1a6654c11054c021b330404`。
 - Windows/Linux 重新打包逐字节一致，安装器固定绑定包 SHA；提交后另以 `release_audit.py` 对照 Git HEAD 的全部运行时文件，不上传 dist 或测试/运行数据。
 - 待上传 Git blob 75 个公开源文件白名单及已知会话敏感值检查通过。完整 CI 新增 self-check、官方 Mihomo 及真实本机分族 Caddy 检查；具体提交/CI 状态以 [PR #1](https://github.com/km-hl/Node-Pilot/pull/1) 为准。

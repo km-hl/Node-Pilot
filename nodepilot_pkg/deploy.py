@@ -94,20 +94,20 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
     return True
 
 
-def deploy(source, digest, source_url=""):
+def deploy(source, digest, source_url="", root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/nodepilot'),
+           units=Path('/etc/systemd/system'), manager=None):
     supported()
     if not re.fullmatch(r"[a-fA-F0-9]{64}", digest):
         raise PilotError("非法项目包校验值。")
-    root, launcher = Path("/opt/nodepilot"), Path("/usr/local/bin/nodepilot")
-    units = Path("/etc/systemd/system")
+    root, launcher, units = map(Path,(root,launcher,units))
     assert_program_owned(root,launcher,units)
     # Serializes upgrades with all manager and renewal operations.
-    manager = Manager(migrate_owner=False)
+    manager = manager or Manager(migrate_owner=False)
     state_marker=manager.state/'.owner'
     with manager.locked():
         recover_program(root,launcher,units,manager)
         from .installation import recover_uninstall
-        recover_uninstall(manager)
+        recover_uninstall(manager,root,launcher,units)
         manager.recover_core()
         manager.recover()
         from .adoption import Adoptions
@@ -178,6 +178,9 @@ def deploy(source, digest, source_url=""):
             if previous_units['nodepilot-renew.timer'] is not None:
                 if timer_enabled not in {'enabled','enabled-runtime'}:
                     run(['systemctl','disable','nodepilot-renew.timer'])
+                elif timer_enabled=='enabled-runtime':
+                    run(['systemctl','disable','nodepilot-renew.timer'])
+                    run(['systemctl','enable','--runtime','nodepilot-renew.timer'])
                 if not timer_active:
                     run(['systemctl','stop','nodepilot-renew.timer'])
             if previous_owner is not None:

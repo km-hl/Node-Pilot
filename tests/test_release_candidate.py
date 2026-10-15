@@ -263,6 +263,38 @@ class CertificateRecoveryRC2Tests(unittest.TestCase):
 
 
 class ProgramRecoveryTests(unittest.TestCase):
+    @unittest.skipUnless(os.name=='posix','Linux program transaction')
+    def test_failed_upgrade_restores_legacy_owners_and_runtime_timer_enablement(self):
+        from nodepilot_pkg.deploy import deploy
+        from nodepilot_pkg.installation import LAUNCHER,RENEW_SERVICE,LEGACY_RENEW_TIMER
+        with tempfile.TemporaryDirectory() as d:
+            base=Path(d);root=base/'program';app=root/'app';old=app/('a'*64);old.mkdir(parents=True)
+            (old/'nodepilot').write_text('old');atomic_json(old/'files.json',{'schema':1,'files':['nodepilot']})
+            (app/'current').symlink_to(old.name,target_is_directory=True);(root/'.owner').write_text(LEGACY_OWNER)
+            units=base/'units';units.mkdir();launcher=base/'nodepilot';launcher.write_text(LAUNCHER)
+            for name,text in (('nodepilot-renew.service',RENEW_SERVICE),('nodepilot-renew.timer',LEGACY_RENEW_TIMER)):
+                (units/name).write_text(text)
+            service_units=base/'service-units';m=Manager(base/'state',FakeCores(),FakeServices(service_units),migrate_owner=False)
+            m.initialize();(m.state/'.owner').write_text(LEGACY_OWNER)
+            source=base/'payload';source.mkdir();(source/'nodepilot').write_text('candidate')
+            calls=[];failed=False
+            def command(args,**kwargs):
+                nonlocal failed
+                args=list(map(str,args));calls.append(args)
+                if args[:2]==['systemctl','show']:
+                    return 'enabled-runtime' if 'UnitFileState' in args else ('active' if 'ActiveState' in args else '')
+                if args[0]=='python3' and ('b'*64) in args[1] and (app/'current').resolve().name=='b'*64 and not failed:
+                    failed=True;raise PilotError('injected installed self-check failure')
+                return ''
+            with patch('nodepilot_pkg.deploy.supported'),patch('nodepilot_pkg.deploy.run',side_effect=command),self.assertRaises(PilotError):
+                deploy(source,'b'*64,root=root,launcher=launcher,units=units,manager=m)
+            self.assertEqual((app/'current').resolve(),old)
+            self.assertEqual((root/'.owner').read_text(),LEGACY_OWNER)
+            self.assertEqual((m.state/'.owner').read_text(),LEGACY_OWNER)
+            self.assertEqual((units/'nodepilot-renew.timer').read_text(),LEGACY_RENEW_TIMER)
+            self.assertIn(['systemctl','enable','--runtime','nodepilot-renew.timer'],calls)
+            self.assertFalse((root/'program-pending.json').exists())
+
     def test_durable_upgrade_finishes_after_each_interruption_and_is_idempotent(self):
         from nodepilot_pkg.deploy import recover_program
         from nodepilot_pkg.installation import LAUNCHER,RENEW_TIMER
