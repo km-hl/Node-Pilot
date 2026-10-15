@@ -649,6 +649,85 @@ class ProgramRC3Tests(unittest.TestCase):
                 self.assertEqual((root/'app/current').resolve().name,'a'*64)
 
 
+@unittest.skipUnless(os.name=='posix','complete transaction finalization')
+class CompleteProgramTests(unittest.TestCase):
+    environment=ProgramRC3Tests.environment
+    install=ProgramRC3Tests.install
+    recover=ProgramRC3Tests.recover
+
+    def completed(self,base,enabled='disabled',active='active'):
+        from nodepilot_pkg import deploy
+        env=self.environment(base,enabled,active);original=deploy.checkpoint
+        def crash(journal,record,step):
+            original(journal,record,step)
+            if step=='checked':raise SystemExit('complete persisted, unlink not done')
+        with patch('nodepilot_pkg.deploy.checkpoint',side_effect=crash),self.assertRaises(SystemExit):self.install(env)
+        return env
+
+    def files(self,env):
+        root,launcher,units,m,source,sd=env
+        paths=[root/'.owner',m.state/'.owner',launcher,*[units/n for n in ('nodepilot-renew.service','nodepilot-renew.timer')],root/'source.json']
+        return {p:(p.read_bytes(),p.stat().st_ino,p.stat().st_mtime_ns) for p in paths}
+
+    def test_complete_only_unlinks_intent_all_six_states_and_repeat_is_noop(self):
+        for enabled,active in ProgramRC3Tests.states:
+            with self.subTest(enabled=enabled,active=active),tempfile.TemporaryDirectory() as d:
+                env=self.completed(Path(d),enabled,active);root,launcher,units,m,source,sd=env
+                history=root/'program-pending-rc2.json';history.write_text('audit evidence')
+                before=self.files(env);link=(root/'app/current').lstat();backups=list((m.state/'backups').iterdir())
+                sd.calls.clear()
+                with patch('nodepilot_pkg.deploy.atomic_bytes',side_effect=AssertionError('complete wrote file')), \
+                     patch('nodepilot_pkg.deploy.atomic_json',side_effect=AssertionError('complete wrote journal')):
+                    self.assertTrue(self.recover(env))
+                self.assertEqual(self.files(env),before)
+                self.assertEqual((root/'app/current').lstat().st_ino,link.st_ino)
+                self.assertEqual(list((m.state/'backups').iterdir()),backups)
+                self.assertEqual(history.read_text(),'audit evidence')
+                self.assertTrue(all(c[:2]==['systemctl','show'] for c in sd.calls))
+
+    def test_complete_mismatch_never_repairs_or_discards_evidence(self):
+        for mode in ('current','hash','manifest','launcher','service','timer_unit','active','enabled','root_owner','state_owner','source','source_link'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as d:
+                env=self.completed(Path(d));root,launcher,units,m,source,sd=env
+                if mode=='current':
+                    (root/'app/current').unlink();(root/'app/current').symlink_to('a'*64,target_is_directory=True)
+                elif mode=='hash':(root/'app'/('b'*64)/'nodepilot').write_text('tampered')
+                elif mode=='manifest':(root/'app'/('b'*64)/'nodepilot_pkg/cli.py').unlink()
+                elif mode=='launcher':launcher.write_text('external launcher')
+                elif mode in ('service','timer_unit'):(units/('nodepilot-renew.service' if mode=='service' else 'nodepilot-renew.timer')).write_text('external unit')
+                elif mode=='active':sd.active='inactive'
+                elif mode=='enabled':sd.enable('enabled')
+                elif mode=='root_owner':(root/'.owner').write_text(LEGACY_OWNER)
+                elif mode=='state_owner':(m.state/'.owner').write_text(LEGACY_OWNER)
+                elif mode=='source':atomic_json(root/'source.json',{'repository':'other/project'})
+                else:
+                    (root/'source.json').unlink();(root/'source.json').symlink_to(source/'nodepilot')
+                journal=root/'program-pending.json';before=journal.read_bytes();sd.calls.clear()
+                with patch('nodepilot_pkg.deploy.atomic_bytes',side_effect=AssertionError('unexpected repair')),self.assertRaises(PilotError):self.recover(env)
+                self.assertEqual(journal.read_bytes(),before)
+                self.assertTrue(all(c[:2]==['systemctl','show'] for c in sd.calls))
+
+    def test_complete_unlink_io_error_keeps_evidence_and_retry_finalizes(self):
+        with tempfile.TemporaryDirectory() as d:
+            env=self.completed(Path(d));journal=env[0]/'program-pending.json';before=journal.read_bytes();files=self.files(env)
+            original=Path.unlink
+            def fail(path,*args,**kwargs):
+                if path==journal:raise OSError('injected unlink I/O failure')
+                return original(path,*args,**kwargs)
+            env[-1].calls.clear()
+            with patch.object(Path,'unlink',fail),self.assertRaises(OSError):self.recover(env)
+            self.assertEqual(journal.read_bytes(),before);self.assertEqual(self.files(env),files)
+            self.assertTrue(self.recover(env));self.assertEqual(self.files(env),files)
+
+    def test_complete_legacy_record_uses_legacy_source_and_never_reinstalls(self):
+        with tempfile.TemporaryDirectory() as d:
+            env=self.completed(Path(d));root=env[0];journal=root/'program-pending.json';record=read_json(journal)
+            del record['source_after'];record['transaction_version']=1;record['repository']='example/project'
+            atomic_json(root/'source.json',{'repository':'example/project'});atomic_json(journal,record)
+            env[-1].calls.clear();self.assertTrue(self.recover(env))
+            self.assertTrue(all(c[:2]==['systemctl','show'] for c in env[-1].calls))
+
+
 @unittest.skipUnless(os.name=='posix','durable node revisions')
 class CaddyRollbackRC2Tests(unittest.TestCase):
     def test_partial_node_delete_survives_loss_of_inner_pending_file(self):

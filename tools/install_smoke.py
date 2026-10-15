@@ -15,12 +15,13 @@ from nodepilot_pkg.installation import uninstall
 from nodepilot_pkg.manager import Manager
 
 
-def tty_command(command, replies=("0",), timeout=120, cwd=ROOT, expect_code=0):
+def tty_command(command, replies=("0",), timeout=120, cwd=ROOT, expect_code=0, source_replies=()):
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(cwd)
         os.execvp(command[0], command)
     received, sent, completed = bytearray(), 0, False
+    source_sent=0
     start = time.monotonic()
     try:
         while time.monotonic() - start < timeout:
@@ -33,6 +34,9 @@ def tty_command(command, replies=("0",), timeout=120, cwd=ROOT, expect_code=0):
                 if not chunk:
                     break
                 received.extend(chunk)
+                source_count=bytes(received).count('确认变更安装来源'.encode())
+                if source_count>source_sent and source_sent<len(source_replies):
+                    os.write(fd,(source_replies[source_sent]+'\n').encode());source_sent+=1
                 prompt_count = bytes(received).count("请输入选项".encode())
                 if prompt_count > sent and sent < len(replies):
                     os.write(fd, (replies[sent] + "\n").encode())
@@ -73,6 +77,10 @@ def main():
     try:
         first_installer=str(args.legacy_source.resolve()/'install.sh') if args.legacy_source else 'install.sh'
         tty_command(["bash", first_installer, "--local"],cwd=args.legacy_source.resolve() if args.legacy_source else ROOT)
+        if not args.legacy_source:
+            from nodepilot_pkg.project_update import read_source, active_repository
+            source=read_source(Path('/opt/nodepilot'))
+            assert source['provenance']=='local-source' and active_repository(source) is None
         print("local install automatically opens TTY menu OK")
         sentinel = Path("/etc/nodepilot/.smoke-sentinel")
         sentinel.write_text("preserve")
@@ -80,7 +88,10 @@ def main():
         tty_command(["bash", "install.sh", "--local"])
         assert sentinel.read_text() == "preserve"
         print("repeat install preserves state OK")
-        tty_command(["bash", "install.sh", "--local", "--upgrade"])
+        tty_command(["bash", "install.sh", "--local", "--upgrade"],source_replies=('y',))
+        from nodepilot_pkg.project_update import read_source, active_repository
+        source=read_source(Path('/opt/nodepilot'))
+        assert source['provenance']=='local-source' and active_repository(source) is None
         assert sentinel.read_text() == "preserve"
         print("local script upgrade preserves state OK")
         import tempfile

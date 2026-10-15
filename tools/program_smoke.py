@@ -103,7 +103,7 @@ def matrix(installer, payload, digest, label):
                     if outcome == 'failure':
                         try:
                             with patch('nodepilot_pkg.deploy.run', side_effect=fail):
-                                deploy.deploy(payload, digest, manager=m)
+                                deploy.deploy(payload, digest, manager=m,confirm_source_change=lambda old,new:True)
                         except PilotError as error:
                             assert 'smoke injected' in str(error)
                         else:raise AssertionError('failure injection missed')
@@ -112,7 +112,7 @@ def matrix(installer, payload, digest, label):
                     elif outcome == 'interrupted':
                         try:
                             with patch('nodepilot_pkg.deploy.checkpoint', side_effect=crash):
-                                deploy.deploy(payload, digest, manager=m)
+                                deploy.deploy(payload, digest, manager=m,confirm_source_change=lambda old,new:True)
                         except SystemExit:pass
                         else:raise AssertionError('interruption missed')
                         record = read_json('/opt/nodepilot/program-pending.json')
@@ -121,7 +121,7 @@ def matrix(installer, payload, digest, label):
                             assert deploy.recover_program(manager=m)
                             assert not deploy.recover_program(manager=m)
                     else:
-                        deploy.deploy(payload, digest, manager=m)
+                        deploy.deploy(payload, digest, manager=m,confirm_source_change=lambda old,new:True)
                     assert timer_state() == {'unit_file_state': enabled, 'active_state': active}
                     links(enabled)
                     assert Path('/etc/nodepilot/.smoke-sentinel').read_text() == 'preserve'

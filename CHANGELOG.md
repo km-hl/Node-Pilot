@@ -2,6 +2,14 @@
 
 ## 0.4.0 — 候选，尚未稳定发布
 
+RC4 收尾（不另建 RC5）：
+
+- complete 阶段新增独立只读最终化：核对程序/哈希、owner、launcher、单元、timer、来源后仅删除活动日志，不重装、重写、reload、self-check 或恢复 timer；不一致和删除 I/O 错误保留证据。
+- 本地打包不再向部署传递模板 Release URL；source.json 区分 official-release / local-source / explicit-user-bound。来源变化需确认，Release 转本地保留非活动历史绑定；旧合法 repository 格式兼容读取，不推断 Git remote。
+- 新增显式 bind-source --confirm，仅在稳定 Release 附件来源/SHA 元数据通过后绑定；未绑定、损坏、未知来源或活动事务拒绝在线更新/绑定。沿用原下载、解包、候选执行前校验和原配置回滚。
+- 来源感知事务使用子版本 2，继续恢复旧子版本 1；旧 RC3/初版 RC4 将明确拒绝新事务，避免忽略来源字段后错误恢复绑定。外层 owner/schema 和节点格式不变。
+- 增加 complete 异常/重复/删除失败、来源授权迁移矩阵，以及真实 PTY/systemd 的 complete 最终化和修改版 Fork 本地安装测试。外部 ACME/IPv6/重启/低内存整机/GUI 验收限制继续保留。
+
 RC4 增量：
 
 - 安装器所有非升级入口在进入旧菜单前检查活动 program-pending.json，包括损坏、目录、正常/悬空符号链接；保守拒绝并指引可信新版 --local --upgrade，不将文件存在视为有效事务。历史 program-pending-rc2.json 不阻止正常启动。

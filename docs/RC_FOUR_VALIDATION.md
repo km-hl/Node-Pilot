@@ -1,5 +1,7 @@
 # v0.4.0 RC4：安装器事务保护与发布前验收
 
+本页先保留 RC4 初版历史证据（行号对应当时提交），文末“RC4 收尾”记录基于 `667c42f` 的最新修复、当前行号与重跑结果；不创建 RC5。正式发布判断以收尾节为准。
+
 日期：2026-10-15。分支 `codex/v0.4.0-stability`，现有 [PR #1](https://github.com/km-hl/Node-Pilot/pull/1)。开始前 fetch 并核对 GitHub，最新提交仍为审查基线 `5a7a6ab83d51bcef1d1d6bd1956693f54def8f58`。修改前 Linux 完整基线 159 项通过。PR 保持草稿，不合并 main，不创建 Release。
 
 ## 本轮缺陷、位置与行为
@@ -95,3 +97,55 @@ Zone 归属、TXT 创建/传播/成功与失败清理、Staging/正式签发、�
 **建议继续保留 RC4 稳定候选并完成剩余验收，不建议进入正式 v0.4.0 发布、合并或创建 Release。** 已授权本地稳定性修复完成，外部条件不足时不降低标准。
 
 本地可复现候选包 SHA-256：`a01624010026f3689b3525f8571970eca93dfaa0ef6e99350f4954d45fcdfc00`，installer 重新绑定同一摘要。候选附件仍未正式发布；源码 --local 验证不证明默认在线下载 URL 当前可用。dist、内核、测试凭据、私钥、节点配置和原始运行日志不上传。
+
+## RC4 收尾：complete 最终化与安装来源（当前结论）
+
+收尾基线 `667c42f6e86a36a59ce5dc2fcc179f87af7af670`，开始前 fetch 和 PR 核对确认没有新提交，修改前 165 项测试通过。本节覆盖本轮最新代码与重跑；不以 RC5 命名，不创建新 PR/Release，不合并 main。
+
+### 修复与代码位置
+
+| 等级/位置 | 触发、影响与修复 |
+|---|---|
+| P2 `deploy.py:202,265` | phase=complete 已持久化、日志删除前中断，原恢复会再切 current、写 owner/launcher/单元、reload、self-check、恢复 timer。现独立进入只读最终化，逐项核对实际状态后仅 unlink 活动日志并 fsync。异常不重装、不自动修复、不回滚，不删除证据。 |
+| P2 `install.sh:81`、`project_update.py:14,48,68` | --local 原先仍传默认 Release URL，修改版/Fork 因而错误绑定上游。现本地打包后清空 URL，持久化 local-source；来源切换需 TTY 明确确认、默认取消，确认在锁内且先于备份/程序改写。 |
+| P2 `project_update.py:87,102`、`cli.py:20,32` | 安装来源与更新授权未区分。新增显式 bind-source --confirm，校验仓库及稳定 Release 的 install.sh、项目包唯一附件/精确 HTTPS URL/官方 SHA-256 元数据后才记录授权；绑定不执行升级。异常/未绑定来源不得继续更新，活动程序事务不得修改绑定。 |
+| 附加收紧 `releases.py:19`、`project_update.py:75` | 拒绝仓库路径的 `.` / `..`、来源 schema 布尔/异常类型、链接/非普通/超大来源文件，以及附件 URL 不匹配目标仓库/tag/name、userinfo/query/fragment 或异常 digest。旧合法格式保持兼容，不通过 URL 外观推断代码可信。 |
+
+complete 只读核对：current 指向目标、目标目录/清单/必要模块/逐文件哈希和版本、程序及状态 owner、launcher、两个单元准确字节、无外部 FragmentPath/drop-in/异常链接、timer 两项独立状态、source.json 与事务预期。所有命令只允许 systemctl show；不执行候选 Python、不新建备份、不写安装文件、不 reload/start/stop/enable/disable。旧修订已经退出执行路径，最终化不依赖再次安装它。
+
+成功后只删除活动 program-pending.json，program-pending-rc2.json 历史证据保留。删除失败时保留日志，下一次仍只验证/最终化；状态不一致报告相应项目并保留证据供人工诊断。若在 complete 后主动修改了 timer/来源等状态，也会拒绝，不能将它当作“授权重新安装”。可信安装器的包下载/解包/入口自检仍是独立的供应链检查，不等于 complete 恢复再次执行安装。
+
+### 来源数据与迁移策略
+
+复用 source.json，新增结构化 provenance，不改节点 schema、owner schema 或事务外层 schema=2。新事务以 transaction_version=2 强制包含 source_after，回滚仍逐字节恢复 previous.source；继续读取旧子版本 1，没有新字段时按原 repository/原 source 快照验证和恢复。附加审查发现旧 RC4 会忽略未知来源字段，因此必须升级子版本让旧 RC3/初版 RC4 明确拒绝，不能只增加可忽略字段。已用可信旧 RC4 检查拒绝行为。
+
+| 记录 | 权限/迁移 |
+|---|---|
+| `{"schema":1,"provenance":"official-release","repository":"owner/repo"}` | 可信 installer 已完成包 SHA-256 与安全解包后，依据真实传入的严格 Release 附件 URL 记录仓库；并非 URL 本身提供执行信任。相同仓库升级无需额外来源确认。 |
+| `{"schema":1,"provenance":"local-source"}` | 本地源码默认状态，不推断 cwd/Git remote/模板 URL；没有在线更新权限。 |
+| local-source 加 `previous_binding:{"repository":"owner/repo"}` | 从已有绑定转本地须确认，旧仓库保留为非活动历史，不默默丢失也不继续授予更新权限。 |
+| `{"schema":1,"provenance":"explicit-user-bound","repository":"owner/repo"}` | 用户审查仓库后通过 `nodepilot bind-source owner/repo --confirm` 授权；稳定 Release 附件元数据须通过验证。此操作只修改绑定，不执行新程序。 |
+| 旧 `{"repository":"owner/repo"}` | v0.3/RC 兼容读取，旧绑定继续有效且纯读取不改原字节。旧格式不能证明当时来自本地还是 Release，不自动猜测并抹除；主动以本地源码升级时提示确认并保留非活动历史。 |
+
+Release → 本地、本地 → Release、仓库 A → B 均要求必要确认；拒绝在任何程序改写和新备份之前返回。来源一致且同包完整则维持无副作用的快捷返回。损坏/未知来源保留文件并拒绝，不用“未绑定”掩盖异常。来源缺失/本地未绑定时在线查询直接提示本地升级或显式绑定，网络发布请求不会发出。
+
+### 本轮实测
+
+最终 **179 项测试通过，无 skip**（基线 165，新增 14 个方法，子场景单列），既有协议、卸载、Cloudflare Token 生命周期、旧元数据、timer 六状态回归全部保留。
+
+- `CompleteProgramTests`（`tests/test_release_candidate.py:653`）：六种 timer 状态正常 complete 只删除日志；current inode、owner/launcher/单元/source 的字节及 inode/mtime、备份集合不变，历史证据不删，第二次恢复无待处理。12 类错误覆盖 current、哈希、缺模块、launcher、service/timer、timer 两项状态、两处 owner、来源及来源链接；全部拒绝且日志原字节保留。另验 unlink I/O 错误后重试、旧来源格式 complete 兼容。
+- `tests/test_project_source.py`：官方/本地首次、旧 v0.3/RC 来源、授权/拒绝迁移、非活动历史、本地继续升级、回滚原 source 精确字节、无绑定时不联网、损坏/链接/异常 schema/仓库、显式绑定确认/附件校验/活动事务拒绝。
+- **真实 Debian 13 amd64 WSL/systemd/PTY**：原四版本 × intent/current 的 8 组继续通过，新增每个旧版本的 checked/complete 最终化，四基线共 12 组；另以初版 RC4 为第五基线执行三阶段，共 **15 组跨版本中断恢复**。其中 **5 组 complete** 实际限制为只读 systemctl show，禁用所有安装写入函数，核对 inode/mtime 未变；旧 RC4 当前管理器会拒绝新的子版本 2，日志和原状态保持。
+- **真实来源流程** `tools/source_smoke.py`：修改过的 Fork 源码且包含 Git remote，首次/重复本地安装不推断上游；本地 → Release 和 Release → 本地分别拒绝/确认；相同 Release/local 重复升级不增备份；旧绑定转非活动历史；Release 首次 provenance 正确。**Release 传输使用临时 curl 替身，实际 SHA/解包/部署/systemd，但未下载尚未发布的公网 RC 附件**。显式绑定的远端 Release API 元数据使用单元夹具，不冒充真实仓库验证。
+- 36 组真实 systemd 六状态成功/失败/中断矩阵及 2 组首次成功/失败通过；安装/旧安装器/TTY/管道/卸载 smoke、旧 v0.3 三节点 metadata/URI/配置/监听、真实启动失败回滚、删除隔离和 Caddy 本机 IPv4/IPv6/双栈 HTTP/PID 检查重跑通过。
+- bash -n、ShellCheck 0.10.0、self-check 通过；官方 Xray 26.3.27、sing-box 1.14.3、Caddy 2.11.7 再下载并通过 SHA/ELF/版本及 8 项原生配置检查；官方 Mihomo 1.19.32 三协议导出解析通过。配置检查/解析不能替代 GUI 或真实公网连接。
+
+本轮完整命令沿用上文所列；bootstrap_smoke 内增加 checked 场景，另执行 `python3 tools/source_smoke.py --disposable` 及 `python3 tools/bootstrap_smoke.py --disposable --legacy-source .test-tools/rc4-before-source`。私有日志为 `.test-output/rc4-close-*.log`，不上传。所有系统级测试都在已确认无 NodePilot 安装的可销毁 WSL 进行，拒绝生产路径；结束清理临时节点、单元、安装和启用链接。真实中断仍为 SystemExit 注入，不是断电/整机重启。
+
+### 聚焦 Code Review 与发布判断
+
+再次核对所有安装/升级入口、owner/状态锁、包和候选执行前校验、complete 副作用、日志删除顺序、回滚失败保留、来源变更与凭据隔离、外部 systemd/配置边界。已知两项 P2 已修复；确认取消发生在备份前、来源提交在最终自检后而 complete 之前、回滚恢复原字节，最终化异常不被普通安装 catch 掩盖。本轮范围未发现新的未修复明确 P0/P1 代码缺陷；不等于对全项目/全部外部环境作无缺陷承诺。
+
+**建议冻结功能并进入最终发布验收，继续保留 RC4；尚不建议正式发布/合并。** 外部验收缺口保持原样：真实 Cloudflare TXT 创建/传播/清理、Staging/正式签发及自动续期、实际插件脱敏、部分公网 IPv6、VPS 重启、Debian/Ubuntu/arm64 完整实机、256MiB 长期整机和 GUI 客户端，均不能由本轮 Mock/WSL 结果代替。未查找或使用其他项目的隐私凭据，未访问生产 VPS，未修改全局网络/sysctl/swap，也无新增协议/常驻服务/无关依赖。
+
+收尾候选包 SHA-256：`5ae17c93f8e7cb570950e9f2e6626b5596b11d3597a7840c505dbb7d00259346`。安装器重新绑定，Windows/Linux 可复现包一致，提交后对照 Git HEAD 做文件审计；不上传 dist、内核或运行数据。前文 a016… 为初版历史产物，当前以本节摘要为准；不创建 Release 或 RC5。

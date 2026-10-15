@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 PAYLOAD_URL='https://github.com/km-hl/Node-Pilot/releases/download/v0.4.0/nodepilot-0.4.0.tar.gz'
-PAYLOAD_SHA256='a01624010026f3689b3525f8571970eca93dfaa0ef6e99350f4954d45fcdfc00'
+PAYLOAD_SHA256='5ae17c93f8e7cb570950e9f2e6626b5596b11d3597a7840c505dbb7d00259346'
 LOCAL=0
 UPGRADE=0
 for arg in "$@"; do
@@ -77,6 +77,8 @@ if [[ $LOCAL -eq 1 ]]; then
     [[ -f $source_dir/tools/package.py && -d $source_dir/nodepilot_pkg ]] || fail '--local 需要完整本地项目。'
     python3 "$source_dir/tools/package.py" --archive "$archive"
     PAYLOAD_SHA256=$(sha256sum "$archive" | cut -d ' ' -f 1)
+    # Local provenance must never inherit the template's Release URL.
+    PAYLOAD_URL=''
 else
     PAYLOAD_URL=${NODEPILOT_SOURCE_URL:-$PAYLOAD_URL}
     PAYLOAD_SHA256=${NODEPILOT_SOURCE_SHA256:-$PAYLOAD_SHA256}

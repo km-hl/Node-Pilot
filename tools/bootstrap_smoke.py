@@ -37,7 +37,7 @@ def interrupt(payload,digest,step):
         if journal.name=='program-pending.json' and record.get('step')==step:
             raise SystemExit('bootstrap smoke interruption')
     try:
-        with patch('nodepilot_pkg.deploy.atomic_json',side_effect=crash):deploy.deploy(payload,digest)
+        with patch('nodepilot_pkg.deploy.atomic_json',side_effect=crash):deploy.deploy(payload,digest,confirm_source_change=lambda old,new:True)
     except SystemExit:pass
     else:raise AssertionError('interruption missed')
 
@@ -101,7 +101,7 @@ def main():
         curl.chmod(0o700)
         for index,legacy in enumerate(args.legacy_source):
             legacy=legacy.resolve();label=legacy.name
-            for step in ('intent','current'):
+            for step in ('intent','current','checked'):
                 require_empty()
                 try:
                     prepare(legacy,'disabled','active')
@@ -112,19 +112,50 @@ def main():
                     interrupt(payload,digest,step)
                     journal=Path('/opt/nodepilot/program-pending.json');evidence=journal.read_bytes();before=snapshot()
                     blocked();assert journal.read_bytes()==evidence and snapshot()==before
+                    if legacy.name=='rc4-before-source' and step=='intent':
+                        tty_command(['nodepilot'],replies=(),expect_code=1,timeout=30)
+                        assert journal.read_bytes()==evidence and snapshot()==before
+                        print('old RC4 manager refuses source-aware v2 intent without changing policy OK',flush=True)
                     print(label,step,'pending shortcut blocked OK',flush=True)
                     if index==0 and step=='current':anomalies()
+                    if step=='checked':
+                        files=[Path('/usr/local/bin/nodepilot'),Path('/opt/nodepilot/.owner'),Path('/etc/nodepilot/.owner'),
+                               Path('/etc/systemd/system/nodepilot-renew.service'),Path('/etc/systemd/system/nodepilot-renew.timer'),
+                               Path('/opt/nodepilot/source.json'),Path('/opt/nodepilot/app/current')]
+                        stamps={p:(p.lstat().st_ino,p.lstat().st_mtime_ns) for p in files}
+                        original_run=deploy.run
+                        def read_only(args,**kwargs):
+                            assert list(args)[:2]==['systemctl','show'], 'complete attempted a mutating command'
+                            return original_run(args,**kwargs)
+                        from nodepilot_pkg.manager import Manager
+                        m=Manager(migrate_owner=False)
+                        with m.locked(migrate_owner=False),patch('nodepilot_pkg.deploy.run',side_effect=read_only), \
+                             patch('nodepilot_pkg.deploy.atomic_bytes',side_effect=AssertionError('complete file write')), \
+                             patch('nodepilot_pkg.deploy.atomic_json',side_effect=AssertionError('complete journal write')):
+                            assert deploy.recover_program(manager=m)
+                            assert not deploy.recover_program(manager=m)
+                        assert snapshot()==before
+                        assert {p:(p.lstat().st_ino,p.lstat().st_mtime_ns) for p in files}==stamps
+                        print(label,'complete read-only finalization with real systemd OK',flush=True)
                     backups=set(Path('/etc/nodepilot/backups').iterdir())
                     command=['bash',str(ROOT/'install.sh'),'--local','--upgrade']
                     if index==0 and step=='current':
                         command=['env','PATH='+str(stub)+':'+os.environ['PATH'],
-                                 'NODEPILOT_SOURCE_URL=https://example.invalid/nodepilot-RC4.tar.gz',
+                                 'NODEPILOT_SOURCE_URL=https://github.com/km-hl/Node-Pilot/releases/download/v0.4.0/nodepilot-0.4.0.tar.gz',
                                  'NODEPILOT_SOURCE_SHA256='+digest,'bash',str(ROOT/'install.sh'),'--upgrade']
-                    tty_command(command)
+                    tty_command(command,source_replies=('y',))
+                    if command[0]=='env':
+                        from nodepilot_pkg.project_update import bound_repository,read_source
+                        assert read_source(Path('/opt/nodepilot'))['provenance']=='official-release'
+                        assert bound_repository()=='km-hl/Node-Pilot'
                     assert not journal.exists() and Path('/opt/nodepilot/app/current').resolve().name==digest
                     assert timer_state()=={'unit_file_state':'disabled','active_state':'active'}
                     assert Path('/etc/nodepilot/.smoke-sentinel').read_text()=='preserve'
-                    if step=='current':assert set(Path('/etc/nodepilot/backups').iterdir())==backups
+                    if step=='current' and command[0]!='env':assert set(Path('/etc/nodepilot/backups').iterdir())==backups
+                    if command[0]=='env':
+                        # The previous command deliberately selected Release
+                        # provenance; switching back to local needs new consent.
+                        tty_command(['bash',str(ROOT/'install.sh'),'--local','--upgrade'],source_replies=('y',))
                     before=snapshot();tty_command(['bash',str(ROOT/'install.sh'),'--local','--upgrade'])
                     assert snapshot()==before
                     # Historical evidence is not an active intent, even if it is

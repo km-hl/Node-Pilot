@@ -11,6 +11,8 @@ from .installation import (LAUNCHER, RENEW_SERVICE, RENEW_TIMER, TIMER, owned_un
                            preflight_program, restore_timer, timer_state)
 from .manager import LEGACY_OWNER, Manager, OWNER
 from .system import supported
+from .project_update import (active_repository, authorize_source_change, planned_source,
+                             read_source, source_label, validate_source)
 
 UNITS = {'nodepilot-renew.service': RENEW_SERVICE, TIMER: RENEW_TIMER}
 PHASES = {'preparing', 'installing', 'rolling_back', 'complete'}
@@ -84,12 +86,20 @@ def validate_record(record, root, launcher, units, manager):
     repository = record.get('repository')
     if repository and (not isinstance(repository, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository)):
         raise PilotError('程序升级源无效。')
+    if repository is not None and repository!='':
+        validate_source({'repository':repository})
+    if 'source_after' in record:
+        validate_source(record['source_after'])
+        if (active_repository(record['source_after']) or '') != repository:
+            raise PilotError('程序事务来源与仓库不一致；保留证据。')
     if 'transaction_version' not in record:
         if 'previous' in record or record['phase'] != 'installing':
             raise PilotError('程序事务缺少版本；保留证据。')
         return  # Original RC2 schema=2 intent, migrated durably before any changes.
-    if record['transaction_version'] != 1:
+    if type(record['transaction_version']) is not int or record['transaction_version'] not in {1,2}:
         raise PilotError('未知程序事务版本；保留证据。')
+    if record['transaction_version']==2 and 'source_after' not in record:
+        raise PilotError('程序事务缺少预期来源；保留证据。')
     p = record.get('previous')
     if not isinstance(p, dict) or not isinstance(p.get('units'), dict) or set(p['units']) != set(UNITS):
         raise PilotError('程序事务缺少原单元快照。')
@@ -183,6 +193,43 @@ def checkpoint(journal, record, step):
     atomic_json(journal, record)
 
 
+def expected_source(record):
+    if 'source_after' in record:return record['source_after']
+    if record.get('repository'):return {'repository':record['repository']}
+    return None
+
+
+def finalize_program(record, root, launcher, units, manager):
+    """Read-only validation of a committed installation; unlink the intent LAST."""
+    app=root/'app';destination=app/record['destination'];current=app/'current'
+    if not current.is_symlink() or current.resolve()!=destination.resolve():
+        raise PilotError('complete 校验失败：current 不指向事务目标；保留日志。')
+    verify_candidate(destination,record['hashes'],record.get('target_version'))
+    if text_or_none(root/'.owner')!=OWNER or (manager is not None and text_or_none(manager.state/'.owner')!=OWNER):
+        raise PilotError('complete 校验失败：owner schema 不匹配；保留日志。')
+    if text_or_none(launcher)!=LAUNCHER:
+        raise PilotError('complete 校验失败：launcher 不匹配；保留日志。')
+    for name,content in UNITS.items():
+        if text_or_none(units/name)!=content:
+            raise PilotError(f'complete 校验失败：{name} 内容不匹配；保留日志。')
+    p=record['previous']
+    desired={'unit_file_state':'enabled','active_state':'active'} if p['first_install'] else p['timer']
+    observed=timer_state(run)
+    for field in desired:
+        if observed[field]!=desired[field]:
+            raise PilotError(f'complete 校验失败：timer {field} 不匹配；保留日志。')
+    source=expected_source(record)
+    if source is not None:
+        if read_source(root)!=source:
+            raise PilotError('complete 校验失败：source.json 不匹配；保留日志。')
+    else:
+        read_source(root)
+        if text_or_none(root/'source.json')!=p['source']:
+            raise PilotError('complete 校验失败：原 source.json 已变化；保留日志。')
+    (root/'program-pending.json').unlink()
+    fsync_dir(root)
+
+
 def rollback_program(record, root, launcher, units, manager):
     """Journal remains rolling_back until every restore, including systemd, succeeds."""
     journal = root / 'program-pending.json'
@@ -229,6 +276,9 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
     record = read_json(journal)
     validate_record(record, root, launcher, units, manager)
     app = root / 'app'
+    if record['phase']=='complete':
+        finalize_program(record,root,launcher,units,manager)
+        return True
     assert_old_revision(app, record['old'], record.get('old_version'))
     current = app / 'current'
     if (current.exists() and not current.is_symlink()) or (current.is_symlink() and (
@@ -275,8 +325,9 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
         restore_timer(desired, run)
         checkpoint(journal, record, 'timer')
         run(['python3', destination / 'nodepilot', 'self-check'])
-        if record.get('repository'):
-            atomic_json(root / 'source.json', {'repository': record['repository']})
+        source=expected_source(record)
+        if source is not None:
+            atomic_json(root / 'source.json', source)
         record['phase'] = 'complete'
         checkpoint(journal, record, 'checked')
     except (Exception, KeyboardInterrupt) as error:
@@ -291,7 +342,7 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
 
 
 def deploy(source, digest, source_url='', root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/nodepilot'),
-           units=Path('/etc/systemd/system'), manager=None):
+           units=Path('/etc/systemd/system'), manager=None, confirm_source_change=None):
     supported()
     if not re.fullmatch(r'[a-fA-F0-9]{64}', digest):
         raise PilotError('非法项目包校验值。')
@@ -319,13 +370,17 @@ def deploy(source, digest, source_url='', root=Path('/opt/nodepilot'), launcher=
         if any(p.is_symlink() for p in source.rglob('*')) or source.is_symlink():
             raise PilotError('候选源码含外部链接。')
         hashes = {name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in files}
+        prior_source=read_source(root)
+        next_source=planned_source(prior_source,source_url)
+        authorize_source_change(prior_source,next_source,confirm_source_change,installed=old is not None)
         # Recovery may already have installed this exact verified payload. Do
         # not create another transaction/backup or reload/restart units on retry.
         if old and old.name == digest.lower():
             verify_candidate(old, hashes)
             if (text_or_none(launcher) == LAUNCHER and text_or_none(root / '.owner') == OWNER
                     and text_or_none(manager.state / '.owner') == OWNER
-                    and all(text_or_none(units / name) == content for name, content in UNITS.items())):
+                    and all(text_or_none(units / name) == content for name, content in UNITS.items())
+                    and prior_source==next_source):
                 return
         previous = snapshot(root, launcher, units, manager, old.name if old else None)
         backup = manager.backup()
@@ -335,15 +390,13 @@ def deploy(source, digest, source_url='', root=Path('/opt/nodepilot'), launcher=
         private_dir(root / 'cores')
         app = private_dir(root / 'app')
         destination = app / digest.lower()
-        from urllib.parse import urlsplit
-        url = urlsplit(source_url)
-        match = re.fullmatch(r'/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/releases/download/[^/]+/[^/]+', url.path)
-        record = {'schema': 2, 'transaction_version': 1, 'phase': 'preparing', 'step': 'intent',
+        # Older RC3/RC4 managers reject v2 instead of ignoring source_after.
+        record = {'schema': 2, 'transaction_version': 2, 'phase': 'preparing', 'step': 'intent',
                   'root': str(root), 'launcher': str(launcher), 'units': str(units),
                   'destination': destination.name, 'old': old.name if old else None,
                   'old_version': version(old) if old else None, 'target_version': version(source),
                   'backup': str(backup), 'previous': previous,
-                  'repository': match[1] if url.scheme == 'https' and url.hostname == 'github.com' and match else '',
+                  'repository': active_repository(next_source) or '', 'source_after':next_source,
                   'hashes': hashes}
         validate_record(record, root, launcher, units, manager)
         journal = root / 'program-pending.json'
@@ -372,9 +425,17 @@ def deploy(source, digest, source_url='', root=Path('/opt/nodepilot'), launcher=
         recover_program(root, launcher, units, manager)
 
 
+def confirm_source(previous,target):
+    with open('/dev/tty','r',encoding='utf-8') as reader, open('/dev/tty','w',encoding='utf-8') as writer:
+        note='旧绑定将保留为非活动历史。' if target.get('provenance')=='local-source' and active_repository(previous) else '仅在确认后变更在线更新来源。'
+        print(f'安装来源：{source_label(previous)} → {source_label(target)}。{note}',file=writer)
+        print('确认变更安装来源（y/N）：',end='',file=writer,flush=True)
+        return reader.readline().strip().lower()=='y'
+
+
 if __name__ == '__main__':
     try:
-        deploy(Path(sys.argv[1]), sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else '')
+        deploy(Path(sys.argv[1]), sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else '',confirm_source_change=confirm_source)
     except (PilotError, OSError, ValueError) as error:
         print(f'部署失败：{error}', file=sys.stderr)
         raise SystemExit(1)

@@ -8,7 +8,7 @@
 
 仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.3.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.3.0)。Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)，版本选择与接管实测见 [v0.3.0 验证记录](docs/MANAGEMENT_VALIDATION.md)。
 
-v0.4.0 为候选交付，尚未发布稳定 Release；公开 main 安装命令继续提供 v0.3.0。新增 DNS-01、证书复用、卸载恢复、Reality 组检测、监听诊断和 Mihomo YAML，详见 [变更记录](CHANGELOG.md)、[审查计划](docs/VERSION_FOUR_PLAN.md) 和 [v0.4.0 验证记录](docs/VERSION_FOUR_VALIDATION.md)。候选源码可使用下方 `--local` 安装；其绑定的 v0.4.0 下载入口只在正式发布附件后生效。
+v0.4.0 为候选交付，尚未发布稳定 Release；公开 main 安装命令继续提供 v0.3.0。新增 DNS-01、证书复用、卸载恢复、Reality 组检测、监听诊断和 Mihomo YAML，详见 [变更记录](CHANGELOG.md)、[审查计划](docs/VERSION_FOUR_PLAN.md) 和 [v0.4.0 验证记录](docs/VERSION_FOUR_VALIDATION.md)。候选源码可使用下方 `--local` 安装，默认不绑定在线更新源；Release 模式的 v0.4.0 下载入口只在正式发布附件后生效。
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/km-hl/Node-Pilot/main/install.sh)
@@ -23,6 +23,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/km-hl/Node-Pilot/main/instal
 ```bash
 bash install.sh --local
 ```
+
+本地模式只使用你明确信任的源码打包和校验，安装来源记录为 `local-source`，不会继承脚本模板的 Release URL，也不从工作目录或 Git remote 推断授权。Fork 或自行修改的源码同样默认没有在线更新绑定。
 
 安装完成立即打开菜单。以后只需：
 
@@ -122,7 +124,27 @@ Caddy 聚合配置另经 `caddy validate` 检查，通过私有 Unix 套接字 r
 bash install.sh --local --upgrade
 ```
 
-官方内核升级会先用候选内核检查全部受影响节点，再切换独立内核路径和逐个重启；失败回滚。绑定的安装器记录自己的 GitHub 仓库，菜单 9 从该仓库稳定发布获取 `install.sh` 并校验官方附件 SHA-256 后升级；自定义未绑定源的安装提示使用源码升级命令。
+官方内核升级会先用候选内核检查全部受影响节点，再切换独立内核路径和逐个重启；失败回滚。管理器本身的在线更新只使用明确绑定的 GitHub 仓库，菜单 9 校验稳定 Release 安装器附件 SHA-256 后升级。
+
+| 安装/绑定方式 | source.json 与更新策略 |
+|---|---|
+| 已校验的 Release 附件安装 | `official-release`，记录实际包 URL 对应的仓库；相同仓库正常升级不额外询问来源。URL 看起来属于 GitHub 并不赋予信任，仍须可信安装器、固定/API 摘要及执行前文件校验。 |
+| `--local` 实际安装/升级 | `local-source`，在线更新关闭；可以继续使用可信源码 `--local --upgrade`。普通重复安装只是进入现有菜单，不改变来源。 |
+| 显式用户绑定 | `explicit-user-bound`，仅经用户授权且稳定 Release 的安装器、项目包来源/摘要元数据有效后记录；绑定本身不执行更新。 |
+
+从 Release/已有绑定切换到本地源码时，终端会显示来源变化，默认取消；确认后旧仓库存入非活动的 `previous_binding`，不会继续作为更新权限。由本地切换到 Release 或更换绑定仓库也需确认；拒绝时不切程序、不改来源、不增加备份。相同包且来源、launcher、owner、单元均一致时不重复安装。
+
+本地安装需要在线更新时，先审查目标仓库，再显式授权（将 `owner/repo` 换成你信任的仓库）：
+
+```bash
+nodepilot bind-source owner/repo --confirm
+```
+
+此命令需要 root 和状态锁；有活动程序事务时拒绝绑定，应先用可信新版安装器恢复。未加 `--confirm`、仓库/元数据异常、缺少唯一附件或官方 SHA-256 时不改来源。旧 v0.3/RC 的 `{"repository":"owner/repo"}` 继续可读并保留原绑定；旧记录不能证明当时到底来自本地还是 Release，不会自动猜测并清除。来源缺失、本地未绑定、损坏或异常链接时在线更新安全拒绝并提示处理方式。
+
+`complete` 活动事务表示安装步骤已提交。恢复时会只读验证 current、目标哈希/必要模块、owner、launcher、单元、timer 和来源；一致后仅删除活动日志，保留历史证据。任一项目不符则保留日志并报告具体不一致，不靠重新安装或强行启用 timer 掩盖问题。
+
+来源感知的新程序事务使用 `transaction_version=2`，本版兼容旧子版本 1。旧 RC3/初版 RC4 会拒绝新子版本，不能用其恢复新日志；升级中断应使用可信收尾版 RC4 或更新源码安装器。已安装的旧 v0.3 入口仍无法追溯加固。
 
 ## 客户端
 
