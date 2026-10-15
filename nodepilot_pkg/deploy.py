@@ -8,7 +8,8 @@ from pathlib import Path
 
 from .common import PilotError, atomic_bytes, atomic_json, fsync_dir, private_dir, read_json, run
 from .installation import (LAUNCHER, RENEW_SERVICE, RENEW_TIMER, TIMER, owned_unit,
-                           preflight_program, restore_timer, timer_state)
+                           boot_id, preflight_program, restore_timer, timer_state,
+                           timer_commit, verify_timer_commit)
 from .manager import LEGACY_OWNER, Manager, OWNER
 from .system import supported
 from .project_update import (active_repository, authorize_source_change, planned_source,
@@ -66,7 +67,7 @@ def snapshot(root, launcher, units, manager, old, legacy=False):
         if enabled not in {'', 'disabled'} or active not in {'', 'inactive'}:
             raise PilotError('缺失 timer 的 systemd 状态异常；拒绝覆盖。')
         state = {'unit_file_state': 'disabled', 'active_state': 'inactive'}
-    return {'units': previous, 'timer_exists': exists, 'timer': state,
+    return {'units': previous, 'timer_exists': exists, 'timer': state, 'boot_id': boot_id(),
             'first_install': old is None and not exists,
             'launcher': text_or_none(launcher), 'root_owner': text_or_none(root / '.owner'),
             'state_owner': text_or_none(manager.state / '.owner') if manager else None,
@@ -96,9 +97,9 @@ def validate_record(record, root, launcher, units, manager):
         if 'previous' in record or record['phase'] != 'installing':
             raise PilotError('程序事务缺少版本；保留证据。')
         return  # Original RC2 schema=2 intent, migrated durably before any changes.
-    if type(record['transaction_version']) is not int or record['transaction_version'] not in {1,2}:
+    if type(record['transaction_version']) is not int or record['transaction_version'] not in {1,2,3}:
         raise PilotError('未知程序事务版本；保留证据。')
-    if record['transaction_version']==2 and 'source_after' not in record:
+    if record['transaction_version']>=2 and 'source_after' not in record:
         raise PilotError('程序事务缺少预期来源；保留证据。')
     p = record.get('previous')
     if not isinstance(p, dict) or not isinstance(p.get('units'), dict) or set(p['units']) != set(UNITS):
@@ -125,6 +126,36 @@ def validate_record(record, root, launcher, units, manager):
             not isinstance(n, str) or not re.fullmatch(r'nodepilot|nodepilot_pkg/[a-z_]+\.py', n)
             or not isinstance(h, str) or not re.fullmatch('[0-9a-f]{64}', h) for n, h in hashes.items()):
         raise PilotError('事务缺少完整目标 SHA-256。')
+    if record['transaction_version'] == 3:
+        if 'boot_id' not in p or not valid_boot_id(p['boot_id']):
+            raise PilotError('程序事务开始 boot_id 无效。')
+        if record['phase'] == 'complete':
+            c = record.get('commit')
+            desired = {'unit_file_state':'enabled','active_state':'active'} if p['first_install'] else p['timer']
+            if (record.get('step') != 'checked' or not isinstance(c, dict) or
+                    set(c) != {'boot_id', 'timer', 'links'} or not valid_boot_id(c['boot_id']) or
+                    c['timer'] != desired or not valid_links(c['links'])):
+                raise PilotError('complete 提交证据缺失/无效；保留事务。')
+
+
+def valid_boot_id(value):
+    return value is None or (isinstance(value, str) and re.fullmatch(
+        r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value) is not None)
+
+
+def valid_links(value):
+    if not isinstance(value, dict) or set(value) != {'persistent', 'runtime'}:
+        return False
+    for links in value.values():
+        if not isinstance(links, dict) or len(links) > 128:
+            return False
+        for name, info in links.items():
+            if (not isinstance(name, str) or name.startswith('/') or '..' in name.split('/') or
+                    not isinstance(info, dict) or set(info) != {'target','device','inode','mtime_ns','ctime_ns'} or
+                    not isinstance(info['target'], str) or any(type(info[k]) is not int or info[k] < 0
+                    for k in ('device','inode','mtime_ns','ctime_ns'))):
+                return False
+    return True
 
 
 def verify_candidate(destination, expected=None, expected_version=None):
@@ -199,7 +230,7 @@ def expected_source(record):
     return None
 
 
-def finalize_program(record, root, launcher, units, manager):
+def finalize_program(record, root, launcher, units, manager, reviewed_timer=False):
     """Read-only validation of a committed installation; unlink the intent LAST."""
     app=root/'app';destination=app/record['destination'];current=app/'current'
     if not current.is_symlink() or current.resolve()!=destination.resolve():
@@ -214,10 +245,12 @@ def finalize_program(record, root, launcher, units, manager):
             raise PilotError(f'complete 校验失败：{name} 内容不匹配；保留日志。')
     p=record['previous']
     desired={'unit_file_state':'enabled','active_state':'active'} if p['first_install'] else p['timer']
-    observed=timer_state(run)
-    for field in desired:
-        if observed[field]!=desired[field]:
-            raise PilotError(f'complete 校验失败：timer {field} 不匹配；保留日志。')
+    try:
+        verify_timer_commit(record.get('commit') if record.get('transaction_version') == 3 else None,
+                            desired, units, run, reviewed=reviewed_timer)
+    except (PilotError, OSError) as error:
+        raise PilotError(f'complete timer 校验失败：{error} 保留日志；按 README 人工核对后使用 '
+                         'finalize-program --review-timer <日志SHA256>，不要删除活动日志。') from error
     source=expected_source(record)
     if source is not None:
         if read_source(root)!=source:
@@ -228,6 +261,26 @@ def finalize_program(record, root, launcher, units, manager):
             raise PilotError('complete 校验失败：原 source.json 已变化；保留日志。')
     (root/'program-pending.json').unlink()
     fsync_dir(root)
+
+
+def review_complete(manager, digest, root=Path('/opt/nodepilot'),
+                    launcher=Path('/usr/local/bin/nodepilot'), units=Path('/etc/systemd/system')):
+    """Explicit acknowledgement of timer evidence only, tied to exact private intent."""
+    if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
+        raise PilotError('人工最终化需要已核对日志的 SHA-256。')
+    root, launcher, units = map(Path, (root, launcher, units))
+    with manager.locked(migrate_owner=False, existing_only=True):
+        assert_program_owned(root, launcher, units)
+        journal = root / 'program-pending.json'
+        if journal.is_symlink() or not journal.is_file() or journal.stat().st_size > 256 * 1024:
+            raise PilotError('程序活动日志缺失或不是有界普通文件。')
+        if hashlib.sha256(journal.read_bytes()).hexdigest() != digest:
+            raise PilotError('日志 SHA-256 已变化，必须重新核对；未最终化。')
+        record = read_json(journal)
+        validate_record(record, root, launcher, units, manager)
+        if record['phase'] != 'complete':
+            raise PilotError('仅允许人工核对 complete 的 timer，未完成升级不能跳过。')
+        finalize_program(record, root, launcher, units, manager, reviewed_timer=True)
 
 
 def rollback_program(record, root, launcher, units, manager):
@@ -328,9 +381,17 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
         source=expected_source(record)
         if source is not None:
             atomic_json(root / 'source.json', source)
+        if record['transaction_version'] == 3:
+            record['commit'] = timer_commit(units, run)
+            if record['commit']['timer'] != desired:
+                raise PilotError('提交前 timer 状态变化；拒绝记录 complete。')
         record['phase'] = 'complete'
         checkpoint(journal, record, 'checked')
     except (Exception, KeyboardInterrupt) as error:
+        if record['phase'] == 'complete':
+            # The complete write may already be durable even if fsync/reporting
+            # failed. Never undo a committed transaction on this error path.
+            raise PilotError('complete 提交写入返回错误；保留事务，下次只读核对最终化。') from error
         try:
             rollback_program(record, root, launcher, units, manager)
         except (Exception, KeyboardInterrupt) as rollback:
@@ -390,8 +451,8 @@ def deploy(source, digest, source_url='', root=Path('/opt/nodepilot'), launcher=
         private_dir(root / 'cores')
         app = private_dir(root / 'app')
         destination = app / digest.lower()
-        # Older RC3/RC4 managers reject v2 instead of ignoring source_after.
-        record = {'schema': 2, 'transaction_version': 2, 'phase': 'preparing', 'step': 'intent',
+        # Older RC3/RC4 managers must reject reboot-aware intents explicitly.
+        record = {'schema': 2, 'transaction_version': 3, 'phase': 'preparing', 'step': 'intent',
                   'root': str(root), 'launcher': str(launcher), 'units': str(units),
                   'destination': destination.name, 'old': old.name if old else None,
                   'old_version': version(old) if old else None, 'target_version': version(source),

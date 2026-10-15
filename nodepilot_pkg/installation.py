@@ -1,4 +1,5 @@
 """Owned installation paths only. Backups are intentionally retained."""
+import os
 import re
 import shutil
 from pathlib import Path
@@ -28,6 +29,95 @@ WantedBy=timers.target
 RENEW_TIMER = LEGACY_RENEW_TIMER.replace('OnCalendar=', 'OnBootSec=2min\nOnCalendar=', 1)
 LAUNCHER = "#!/usr/bin/env bash\n# NodePilot owned launcher schema=1\nexec python3 /opt/nodepilot/app/current/nodepilot \"$@\"\n"
 TIMER = 'nodepilot-renew.timer'
+BOOT_ID = Path('/proc/sys/kernel/random/boot_id')
+RUNTIME_UNITS = Path('/run/systemd/system')
+
+
+def boot_id():
+    """Unavailable evidence never implies a reboot."""
+    try:
+        value = BOOT_ID.read_text().strip()
+    except OSError:
+        return None
+    return value if re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value) else None
+
+
+def timer_links(units):
+    """Bounded, no-follow inventory of this timer's enablement links only."""
+    result = {}
+    for scope, directory in (('persistent', Path(units)), ('runtime', RUNTIME_UNITS)):
+        links = {}
+        if directory.is_symlink():
+            raise PilotError('timer 启用目录为链接，无法验证策略。')
+        count = 0
+        def scan(parent, depth=0):
+            nonlocal count
+            with os.scandir(parent) as entries:
+                for entry in entries:
+                    count += 1
+                    if count > 8192 or depth > 8:
+                        raise PilotError('timer 启用目录过大，无法安全自动验证。')
+                    if entry.is_symlink():
+                        target = os.readlink(entry.path)
+                        if entry.name == TIMER or Path(target).name == TIMER:
+                            if len(links) >= 128:
+                                raise PilotError('timer 启用链接过多，拒绝生成超大事务。')
+                            st = entry.stat(follow_symlinks=False)
+                            links[Path(entry.path).relative_to(directory).as_posix()] = {
+                                'target': target, 'device': st.st_dev, 'inode': st.st_ino,
+                                'mtime_ns': st.st_mtime_ns, 'ctime_ns': st.st_ctime_ns}
+                    elif entry.is_dir(follow_symlinks=False):
+                        scan(entry.path, depth + 1)
+        if directory.exists():
+            scan(directory)
+        result[scope] = links
+    return result
+
+
+def timer_commit(units, command=run):
+    return {'boot_id': boot_id(), 'timer': timer_state(command), 'links': timer_links(units)}
+
+
+def verify_timer_commit(commit, desired, units, command=run, reviewed=False):
+    """Read-only proof; reboot alone never authorizes policy reconciliation."""
+    observed = timer_state(command)
+    links = timer_links(units) if commit else None
+    if reviewed:
+        return  # Explicit journal-specific human review; no systemd writes.
+    if commit is None:
+        if observed != desired:
+            raise PilotError('旧事务缺少启动证据，timer 状态不匹配。')
+        return
+    now = boot_id()
+    before = commit['boot_id']
+    if before is None or now is None or now == before:
+        if observed != desired or links != commit['links']:
+            raise PilotError('同次启动或 boot_id 不可读：timer 状态/启用链接不匹配。')
+        return
+    persistent = commit['links']['persistent']
+    if links['persistent'] != persistent:
+        raise PilotError('跨重启 timer 持久启用链接已变化；不能判定为正常重启。')
+    enabled = desired['unit_file_state'] == 'enabled'
+    expected_link = 'timers.target.wants/' + TIMER
+    # Only the standard, unchanged persistent boot dependency proves auto-start.
+    if (enabled and (set(persistent) != {expected_link} or
+            (Path(units) / expected_link).resolve() != (Path(units) / TIMER).resolve())) or (not enabled and persistent):
+        raise PilotError('跨重启 timer 启用拓扑不能证明启动策略。')
+    expected = {'unit_file_state': 'enabled' if enabled else 'disabled',
+                'active_state': 'active' if enabled else 'inactive'}
+    if observed != expected or links['runtime']:
+        raise PilotError('跨重启 timer 策略或运行状态不符合原策略；可能已被用户修改。')
+    def stamp(unit, prop):
+        value = command(['systemctl', 'show', unit, '-p', prop, '--value'])
+        if not re.fullmatch(r'[0-9]+', value):
+            raise PilotError('缺少 systemd 启动时间证据，拒绝猜测 timer 变更原因。')
+        return int(value)
+    enter = stamp(TIMER, 'ActiveEnterTimestampMonotonic')
+    exit_time = stamp(TIMER, 'InactiveEnterTimestampMonotonic')
+    target = stamp('timers.target', 'ActiveEnterTimestampMonotonic')
+    target_exit = stamp('timers.target', 'InactiveEnterTimestampMonotonic')
+    if target <= 0 or target_exit != 0 or exit_time != 0 or (enabled and not 0 < enter <= target) or (not enabled and enter != 0):
+        raise PilotError('timer 非本次启动的原始状态（可能手动启动/停止/重启）；需人工核对。')
 
 
 def timer_state(command=run):

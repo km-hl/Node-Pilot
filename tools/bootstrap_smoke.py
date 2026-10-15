@@ -112,10 +112,10 @@ def main():
                     interrupt(payload,digest,step)
                     journal=Path('/opt/nodepilot/program-pending.json');evidence=journal.read_bytes();before=snapshot()
                     blocked();assert journal.read_bytes()==evidence and snapshot()==before
-                    if legacy.name=='rc4-before-source' and step=='intent':
+                    if legacy.name in {'rc4-before-source','rc4-source-v2'} and step=='intent':
                         tty_command(['nodepilot'],replies=(),expect_code=1,timeout=30)
                         assert journal.read_bytes()==evidence and snapshot()==before
-                        print('old RC4 manager refuses source-aware v2 intent without changing policy OK',flush=True)
+                        print('old RC4 manager refuses boot-aware v3 intent without changing policy OK',flush=True)
                     print(label,step,'pending shortcut blocked OK',flush=True)
                     if index==0 and step=='current':anomalies()
                     if step=='checked':

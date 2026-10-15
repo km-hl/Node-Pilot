@@ -39,7 +39,15 @@ def manager_at(state):
     return Manager(state, cores, services, Caddy(state, cores, services.units))
 
 
+def ssh_address():
+    fields = os.environ.get('SSH_CONNECTION', '').split()
+    if len(fields) != 4:
+        raise PilotError('测试需要明确的 SSH_CONNECTION 地址元数据；未创建测试资源。')
+    return host(fields[2], public=True)
+
+
 def setup():
+    address = ssh_address()
     if run(["systemctl", "show", UNIT, "-p", "FragmentPath", "--value"]):
         raise PilotError("已有同名 Caddy 单元，拒绝运行临时测试。")
     state = Path("/var/lib") / ("nodepilot-caddy-test-" + secrets.token_hex(6))
@@ -56,7 +64,6 @@ def setup():
         verify_elf(destination / name, architecture())
         shutil.copy2(original.parent / "verified.json", destination / "verified.json")
         m.cores.switch(name, destination)
-    address = host(os.environ.get("SSH_CONNECTION", "").split()[2], public=True)
     private, public = m.cores.keypair()
     try:
         with m.locked():

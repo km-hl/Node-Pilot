@@ -140,11 +140,27 @@ bash install.sh --local --upgrade
 nodepilot bind-source owner/repo --confirm
 ```
 
-此命令需要 root 和状态锁；有活动程序事务时拒绝绑定，应先用可信新版安装器恢复。未加 `--confirm`、仓库/元数据异常、缺少唯一附件或官方 SHA-256 时不改来源。旧 v0.3/RC 的 `{"repository":"owner/repo"}` 继续可读并保留原绑定；旧记录不能证明当时到底来自本地还是 Release，不会自动猜测并清除。来源缺失、本地未绑定、损坏或异常链接时在线更新安全拒绝并提示处理方式。
+此命令自行取得现有全局状态锁，不运行恢复或目录初始化。联网前检查程序升级、卸载、内核升级、节点修订/删除、接管/归还、临时凭据事务；活动、损坏、未知格式或链接记录均拒绝绑定。合法的 complete/rolled_back 卸载历史，以及稳定 active/returned/rolled_back 接管记录可以保留；prepared 接管尚未完成，需先人工核对。备份、旧修订和 program-pending-rc2.json 审计记录不作为活动事务。联网结束还会复查事务和原 source.json，防止覆盖校验期间的外部变化。绑定不重启节点、不迁移 owner、不改变证书/Token/内核/分享链接。未加 `--confirm`、仓库/稳定 Release 元数据异常、缺少唯一附件或官方 SHA-256 时不改来源。写入在 replace 后报错时，仅对仍等于本次写入的确切字节回退旧来源（或原来不存在的状态），不覆盖外部编辑/链接；若持续 I/O 故障或外部修改导致无法确认回退，会明确报错，操作者必须核对 source.json，不能假定旧来源已恢复。旧 v0.3/RC 的 `{"repository":"owner/repo"}` 继续可读并保留原绑定；旧记录不能证明当时到底来自本地还是 Release，不会自动猜测并清除。来源缺失、本地未绑定、损坏或异常链接时在线更新安全拒绝并提示处理方式。
 
 `complete` 活动事务表示安装步骤已提交。恢复时会只读验证 current、目标哈希/必要模块、owner、launcher、单元、timer 和来源；一致后仅删除活动日志，保留历史证据。任一项目不符则保留日志并报告具体不一致，不靠重新安装或强行启用 timer 掩盖问题。
 
-来源感知的新程序事务使用 `transaction_version=2`，本版兼容旧子版本 1。旧 RC3/初版 RC4 会拒绝新子版本，不能用其恢复新日志；升级中断应使用可信收尾版 RC4 或更新源码安装器。已安装的旧 v0.3 入口仍无法追溯加固。
+新程序事务使用 `transaction_version=3`，保存开始/提交时 boot_id、原 timer 策略、complete 实际 timer 状态及 `/etc`、`/run` 启用链接的目标/inode/时间信息。旧 RC3/RC4 管理器明确拒绝子版本 3。本版继续读取 RC2 合法 installing 日志及子版本 1/2 的 preparing/installing/rolling_back/complete；旧日志不强制补造启动证据，旧 complete 保持原状态严格校验。升级中断应使用可信收尾版 RC4 或更新源码安装器。已安装的旧 v0.3 入口仍无法追溯加固。
+
+### complete 跨重启与人工核对
+
+同一 boot_id（或 boot_id 不可读）保持 timer 两项状态及新日志启用链接的严格比较。启动周期改变时，仅在持久链接逐项未变、没有新 runtime 链接、状态符合原策略，而且 systemd 单调时间证据符合本次开机时自动激活/从未激活时，才自动最终化。enabled 保持 enabled，允许开机把 inactive 变为 active；enabled-runtime 自然消失为 disabled，disabled 的手动 active 自然变为 inactive。不把 runtime 启用永久化，不强制 start/stop/enable/disable/reload。程序、哈希、owner、launcher、单元及 source 的校验始终保留。
+
+enabled 的 timer 必须不晚于 timers.target 首次进入 active，且二者无停止时间；未启用 timer 的进入/停止时间须为零。手动 start/stop/restart、disable/re-enable 链接替换、异常拓扑、缺少时间证据都会保守拒绝。此判定不提供完整系统操作审计；systemd 状态丢失、非标准启动顺序、文件系统变更也可能需要人工核对，不能只凭 boot_id 声称外部改动合法。
+
+如果仅 timer 证据不匹配，应保留活动日志并按以下步骤处理：
+
+1. 使用可信的本轮 RC4 源码，停止其他 NodePilot 管理操作；不要停止代理节点。将 `/opt/nodepilot/program-pending.json` 复制到 root 私有目录保存证据（权限 0600），不要上传日志或凭据。
+2. 在本机核对日志 `phase` 确为 complete、`step`、事务版本、previous.timer、commit 和 boot_id。用 `systemctl show nodepilot-renew.timer timers.target -p UnitFileState -p ActiveState -p ActiveEnterTimestampMonotonic -p InactiveEnterTimestampMonotonic`、`systemctl cat nodepilot-renew.timer`、`journalctl -b -u nodepilot-renew.timer` 及 `/etc/systemd/system/timers.target.wants/`、`/run/systemd/system/timers.target.wants/` 的链接检查当前策略。核对是否确为自己的改动，或是否有启动证据缺失；原因不明则保留日志，继续诊断。
+3. 人工确认保留**当前** timer 策略，而非恢复旧策略。对已核对的原活动日志运行 `sudo sha256sum /opt/nodepilot/program-pending.json`，保存并核对摘要；不要编辑日志、直接删除日志，或使用 enable --now 消除差异。
+4. 执行 `sudo python3 /可信源码绝对路径/nodepilot finalize-program --review-timer <已人工核对的64位日志SHA256>`。这是对该份日志 timer 差异的显式确认，不代表略过程序检查。命令在全局锁内重新校验 complete/schema、精确摘要、程序及哈希、owner、launcher、单元、来源和受支持的当前 timer 状态，仅删除活动日志；不会写安装文件、签发证书、备份、reload 或改变服务。日志变化、损坏/未完成事务、程序/来源/单元差异仍拒绝；需要先核对可信原始文件和备份，不能用此命令修复它们。
+5. 成功后再进入 `nodepilot` 菜单，确认节点监听和证书续期策略；没有真实连接验证时仍不能宣称节点联通。
+
+此恢复路径适用于无 boot_id 的合法旧 complete 记录。若当前 timer 被 masked 或处于转换/未知状态，仍拒绝自动或人工最终化；由操作者明确处理后再核对。活动 preparing/installing/rolling_back 只能走原有可信安装器恢复，不能用人工确认跳过升级。完整主机重启与各发行版验证状态见 [RC4 验证报告](docs/RC_FOUR_VALIDATION.md)。
 
 ## 客户端
 

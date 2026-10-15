@@ -20,9 +20,9 @@ from nodepilot_pkg.connectivity import check
 from nodepilot_pkg.cores import Cores, verify_elf
 from nodepilot_pkg.installation import LAUNCHER, recover_uninstall, uninstall
 from nodepilot_pkg.manager import OWNER
-from nodepilot_pkg.model import host,new_node
+from nodepilot_pkg.model import new_node
 from nodepilot_pkg.share import share
-from tools.caddy_smoke import manager_at
+from tools.caddy_smoke import manager_at, ssh_address
 
 
 def free_port():
@@ -45,6 +45,7 @@ def state_path():
 
 
 def setup():
+    server=ssh_address()
     if run(['systemctl','show',UNIT,'-p','FragmentPath','--value']):
         raise PilotError('已有同名 Caddy 单元；拒绝临时测试。')
     state=Path('/var/lib')/('nodepilot-stability-test-'+secrets.token_hex(6))
@@ -60,7 +61,6 @@ def setup():
             verify_elf(destination/core,'amd64')
             shutil.copy2(original.parent/'verified.json',destination/'verified.json')
             m.cores.switch(core,destination)
-        server=host(os.environ['SSH_CONNECTION'].split()[2],True)
         with m.locked():
             nodes=[]
             reality_port=free_port()

@@ -1,13 +1,14 @@
 """Update only from the project's recorded GitHub release repository."""
+import json
 import re
 import subprocess
 import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .common import PilotError, atomic_json, read_json, run
+from .common import PilotError, atomic_bytes, atomic_json, fsync_dir, read_json, run
 from .download import fetch
-from .manager import LEGACY_OWNER, OWNER
+from .manager import LEGACY_OWNER, OWNER, Manager
 from .releases import release as official_release, repository, stable_versions, version
 
 
@@ -84,19 +85,50 @@ def release_asset(record, repo, name):
     return asset
 
 
-def bind_repository(repo, confirmed=False, root=Path('/opt/nodepilot')):
-    """Caller holds the manager lock; confirmation authorizes this exact repository."""
+def bind_repository(repo, confirmed=False, root=Path('/opt/nodepilot'), manager=None):
+    """Acquire the global lock even for direct callers; never trigger recovery."""
     repo=repository(repo);root=Path(root)
     if confirmed is not True:raise PilotError('绑定需要明确授权：nodepilot bind-source owner/repo --confirm')
-    if root.is_symlink() or (root/'.owner').is_symlink() or not (root/'.owner').is_file() or (root/'.owner').read_text() not in {OWNER,LEGACY_OWNER}:
-        raise PilotError('项目安装所有权标记不匹配。')
-    if (root/'program-pending.json').exists() or (root/'program-pending.json').is_symlink():
-        raise PilotError('请先用可信新版安装器恢复活动程序事务，再绑定来源。')
-    read_source(root)  # Corrupt existing evidence is never silently overwritten.
-    release=official_release(repo)
-    release_asset(release,repo,'install.sh')
-    release_asset(release,repo,'nodepilot-'+release['tag_name'].lstrip('v')+'.tar.gz')
-    atomic_json(root/'source.json',{'schema':1,'provenance':'explicit-user-bound','repository':repo})
+    manager = manager or Manager(migrate_owner=False)
+    with manager.locked(migrate_owner=False, existing_only=True):
+        if root.is_symlink() or (root/'.owner').is_symlink() or not (root/'.owner').is_file() or (root/'.owner').read_text() not in {OWNER,LEGACY_OWNER}:
+            raise PilotError('项目安装所有权标记不匹配。')
+        manager.assert_transactions_idle(root)
+        previous = read_source(root)  # Corrupt evidence is never silently overwritten.
+        source = root/'source.json'
+        previous_bytes = source.read_bytes() if source.exists() else None
+        release=official_release(repo)
+        if (not isinstance(release, dict) or release.get('draft') or release.get('prerelease') or
+                not re.fullmatch(r'v\d+\.\d+\.\d+', str(release.get('tag_name','')))):
+            raise PilotError('绑定要求有效的稳定 Release 元数据。')
+        release_asset(release,repo,'install.sh')
+        release_asset(release,repo,'nodepilot-'+release['tag_name'].lstrip('v')+'.tar.gz')
+        manager.assert_transactions_idle(root)
+        if read_source(root) != previous or (source.read_bytes() if source.exists() else None) != previous_bytes:
+            raise PilotError('联网校验期间来源记录已变化；拒绝覆盖，请重新核对。')
+        target={'schema':1,'provenance':'explicit-user-bound','repository':repo}
+        expected=(json.dumps(target,ensure_ascii=False,indent=2)+'\n').encode()
+        try:
+            atomic_json(source,target)
+        except (OSError,KeyboardInterrupt) as error:
+            # replace may have succeeded before fsync failed. Undo only our
+            # exact bytes; never overwrite an external edit or symlink.
+            try:
+                if source.is_symlink():
+                    raise PilotError('来源已变为外部链接，拒绝覆盖。')
+                if source.exists() and (not source.is_file() or source.stat().st_size>8192):
+                    raise PilotError('来源文件类型或大小已变化，拒绝读取/覆盖。')
+                current=source.read_bytes() if source.exists() else None
+                if current!=previous_bytes:
+                    if current!=expected:
+                        raise PilotError('来源已由外部修改，拒绝覆盖。')
+                    if previous_bytes is None:
+                        source.unlink();fsync_dir(root)
+                    else:
+                        atomic_bytes(source,previous_bytes)
+            except (Exception,KeyboardInterrupt) as rollback:
+                raise PilotError('来源绑定写入失败，回退未确认；保留现状，请核对 source.json，不能假定旧来源已恢复。') from rollback
+            raise
 
 
 def bound_repository(root=Path("/opt/nodepilot")):

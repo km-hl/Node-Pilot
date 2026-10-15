@@ -1,6 +1,6 @@
 # v0.4.0 RC4：安装器事务保护与发布前验收
 
-本页先保留 RC4 初版历史证据（行号对应当时提交），文末“RC4 收尾”记录基于 `667c42f` 的最新修复、当前行号与重跑结果；不创建 RC5。正式发布判断以收尾节为准。
+本页保留历次 RC4 历史证据（行号对应当时提交）。**当前结论以文末“RC4 最终事务边界修复”一节为准**，基线 `791af46`；不创建 RC5。前文测试、产物摘要和环境结论不能代替最新节的本轮验证。
 
 日期：2026-10-15。分支 `codex/v0.4.0-stability`，现有 [PR #1](https://github.com/km-hl/Node-Pilot/pull/1)。开始前 fetch 并核对 GitHub，最新提交仍为审查基线 `5a7a6ab83d51bcef1d1d6bd1956693f54def8f58`。修改前 Linux 完整基线 159 项通过。PR 保持草稿，不合并 main，不创建 Release。
 
@@ -148,4 +148,113 @@ Release → 本地、本地 → Release、仓库 A → B 均要求必要确认�
 
 **建议冻结功能并进入最终发布验收，继续保留 RC4；尚不建议正式发布/合并。** 外部验收缺口保持原样：真实 Cloudflare TXT 创建/传播/清理、Staging/正式签发及自动续期、实际插件脱敏、部分公网 IPv6、VPS 重启、Debian/Ubuntu/arm64 完整实机、256MiB 长期整机和 GUI 客户端，均不能由本轮 Mock/WSL 结果代替。未查找或使用其他项目的隐私凭据，未访问生产 VPS，未修改全局网络/sysctl/swap，也无新增协议/常驻服务/无关依赖。
 
-收尾候选包 SHA-256：`5ae17c93f8e7cb570950e9f2e6626b5596b11d3597a7840c505dbb7d00259346`。安装器重新绑定，Windows/Linux 可复现包一致，提交后对照 Git HEAD 做文件审计；不上传 dist、内核或运行数据。前文 a016… 为初版历史产物，当前以本节摘要为准；不创建 Release 或 RC5。
+收尾候选包 SHA-256：`5ae17c93f8e7cb570950e9f2e6626b5596b11d3597a7840c505dbb7d00259346`。此摘要现为历史产物；当前以文末最终事务边界修复节为准，不创建 Release 或 RC5。
+
+## RC4 最终事务边界修复（当前结论）
+
+2026-10-15，本轮开始实际 fetch，远端开发分支及草稿 PR #1 仍为审查基线 `791af460de10d5cb7911c57ba510e9d52ddd27db`；两个问题仍存在。仅在 `codex/v0.4.0-stability` 修复，不创建 RC5、不合并 main、不发布稳定 Release。
+
+### 修复及代码位置
+
+| 等级/位置 | 问题及行为 |
+|---|---|
+| P1 `installation.py:36,45,77,81`、`deploy.py:79,233,381` | 原 complete 严格比较两项 timer 状态，无法区分重启后的正常变化。新事务版本 3 保存开始/提交 boot_id、原策略、提交实际状态和启用链接身份；同次启动严格核对，跨启动使用单独证据规则，始终只读。 |
+| P2 `project_update.py:88`、`manager.py:87`、`cli.py:34` | 原绑定只检查程序日志，可能与卸载/内核/节点/接管事务冲突。绑定函数自行加全局锁，在联网前后只读检查相关事务及来源；不触发恢复、停止服务或改动凭据。 |
+| 附加 P2 `deploy.py:390` | complete 持久化之后，提交调用返回 I/O 错误可能落入回滚路径。现不回滚已到 complete 的内存记录，保留已持久化阶段供下次验证恢复；注入 durable complete 后错误，证明不会反向切 current。 |
+| 附加 P2 `manager.py:46`、`deploy.py:266` | 新的只读恢复/绑定入口若复用初始化锁，会创建缺失状态/辅助目录。改为 existing_only 锁，缺失状态/owner/锁拒绝；不创建目录、不迁移 owner。锁使用 O_NOFOLLOW，拒绝非普通文件/硬链接，不在获锁前 chmod 外部路径。 |
+| 附加 P2 `project_update.py:110`、`test_project_source.py:260` | 来源原子 replace 成功后 fsync 报错，原先会返回失败但留下新来源。现仅在当前仍为本次确切写入时恢复旧字节/原缺失状态；外部编辑/链接不覆盖，回退失败明确报告未确认，不报成功或声称原来源已恢复。 |
+| 附加 P2（测试工具）`tools/caddy_smoke.py:41`、`tools/stability_smoke.py:49`、`tools/adoption_smoke.py:57` | VPS 工具缺失 SSH_CONNECTION 时在前提检查前分配临时目录。将共享的地址前提检查移至资源分配前，缺失/异常地址即拒绝，补充无目录分配回归；本次早期残留已按确切绝对路径和 owner 验证清理。 |
+| 测试与说明 | `test_release_candidate.py:739`、`test_project_source.py:104`；`tools/complete_smoke.py:1`、`tools/bootstrap_smoke.py:115`、`tools/service_smoke.py:109`；README 的 complete 跨重启与人工核对节、CHANGELOG。 |
+
+### 跨重启判定与兼容性
+
+complete 的程序目录/清单/必要模块/逐文件哈希/版本、两处 owner、launcher、systemd 单元字节/FragmentPath/drop-in 和 source.json 验证保持。通过后只 unlink 活动 program-pending.json 并 fsync，不执行候选程序、自检、重装、备份、证书签发或 systemd 变更命令。
+
+- 同一 boot_id，或任一 boot_id 不可读：两项 timer 状态及新日志的持久/runtime 链接必须与提交快照完全一致。缺失证据不能被当作“已重启”。
+- boot_id 变化：持久启用链接的路径/目标/device/inode/mtime/ctime 必须完全未变，当前 runtime 链接必须为空。enabled 只接受标准且未变的 timers.target.wants 依赖，保持 enabled+active；enabled-runtime 和 disabled 仅接受 disabled+inactive，不建立永久启用链接。
+- 另核对 systemd ActiveEnterTimestampMonotonic / InactiveEnterTimestampMonotonic：timers.target 必须有本次首次激活时间且无停止时间；enabled timer 须首次激活不晚于该 target、无停止时间；未启用 timer 两个时间须为零。这样可保守拒绝可观察到的手动 start/stop/restart、target 重启、disable/re-enable 链接替换或证据缺失。
+- 判定依据已核对 [systemd timer 官方默认依赖](https://github.com/systemd/systemd/blob/main/man/systemd.timer.xml) 和 [systemctl 官方语义](https://github.com/systemd/systemd/blob/main/man/systemctl.xml)。这些属性不是完整系统审计：被清除的历史、非标准启动顺序或文件系统身份变化可能不能自动判断，必须保留日志并人工核对。相同最终状态不证明从未有人操作；最终化也不回写用户策略。
+- RC2 合法无子版本 installing 日志仍按原逻辑保留证据后迁移；子版本 1/2 的未完成和 complete 日志保持兼容。无 boot_id 的旧 complete 仅严格比较，不猜测历史。子版本 3 在 complete 必须有 checked 阶段和合法提交证据；旧管理器不理解版本 3 时明确拒绝。
+
+无法自动判断时，README 提供完整人工步骤：私有保留日志、核对当前 timer/开机日志与链接、确认保留当前策略、计算并手工核对该日志 SHA-256，再用可信源码执行 `finalize-program --review-timer <SHA256>`。该入口只接受合法 complete 和精确日志摘要，仅确认 timer 差异；仍验证全部程序/owner/来源/单元及受支持当前 timer 状态，不修改原日志、不初始化目录、不改变服务。程序损坏、未知 schema、未完成事务和过时摘要不能通过；不会建议直接删除 program-pending.json。
+
+### 六状态结果与事务隔离
+
+以下是**Mock 故障注入的跨重启模型**，不代表做过整机重启，也不保证所有发行版必然呈现该状态。每个场景都断言程序文件、inode/mtime、current、备份和服务变更命令保持约束。
+
+| complete 时 | 模型重启后 | 结果 |
+|---|---|---|
+| enabled + active | enabled + active | 通过，只删除活动日志 |
+| enabled + inactive | enabled + active | 通过，不停止 timer |
+| enabled-runtime + active | disabled + inactive | 通过，不建立持久链接、不 start |
+| enabled-runtime + inactive | disabled + inactive | 通过，不 enable |
+| disabled + active | disabled + inactive | 通过，不 start |
+| disabled + inactive | disabled + inactive | 通过，不变更策略 |
+
+反例覆盖同 boot 状态/链接变化、跨 boot 单元/drop-in/来源/current/哈希/owner/launcher 异常、用户停用/停止/重启/重新启用、target 重启、时间证据缺失、旧子版本和不可读 boot_id、损坏提交快照、unlink 错误及重复恢复。程序安全校验不因 boot_id 变化而放松；失败日志保持原字节。
+
+绑定隔离覆盖：正常绑定；program complete 但仍活动；未完成卸载/内核/节点修订/节点删除/接管/归还/临时凭据；prepared 接管；损坏 JSON/终态记录/接管记录、未知 schema/phase、外部链接目录/文件；全部在联网前拒绝。合法卸载 complete/rolled_back，及接管 active/returned/rolled_back 可放行；backup、不可变旧修订和 program-pending-rc2.json 审计记录不阻塞。接管 active 表示已经稳定接管，不能把字面的 active 误判为未完成事务。
+
+使用真实 fork 的两个进程争用同一 flock：竞争者不联网、不迁移 legacy owner、不覆盖 source；持锁者完成后仅发布自己的绑定。网络/元数据/写入失败、source symlink 和联网期间外部变更均保留应保留的原字节/外部修改及日志，不为绑定运行卸载/删除/接管恢复。只读入口的缺失状态、缺失锁、符号链接锁和硬链接锁均拒绝，不触碰外部文件。节点监听/PID/配置/分享文本的真实不变性由 service smoke 另行检查（Release API 使用夹具，未冒充真实远端绑定）。
+
+### 最终验证结果
+
+当前单元测试 **198 项通过，0 failure/error/skip**，比基线现有 179 项增加 19 个方法（子场景另列），既有三协议/证书/Token/回滚/接管等回归保留。附加覆盖绑定 replace 后报告错误的旧字节/原缺失回退、回退 I/O 失败和外部编辑/链接保护，以及测试前提缺失不分配目录。
+
+真实 smoke 最终 **19 条工具命令全部退出 0**，包括：
+
+- 六个旧基线（v0.3、RC1、RC2、RC3、来源区分前 RC4、基准 791af46 的来源子版本 2）× intent/current/checked，18 组安装器恢复；最后仅影响绑定的写入错误回退完成后，又针对最终候选追加基准版的 3 组，共 **21 组**。其中 7 组 complete 仅允许只读 systemctl show，并核对文件 inode/mtime/备份不变；两个旧 RC4 管理器实际拒绝事务版本 3。
+- `program_smoke`：两个旧基线 × 六状态 × 成功/失败/中断，共 **36 组真实 systemd timer 矩阵**，加首次安装成功/失败 **2 组**。
+- `complete_smoke`：六状态各严格只读最终化/人为改动后的 SHA-256 确认恢复，共 **12 组**；真实 systemd，但没有重启系统。
+- 安装、旧 v0.3 安装、stdin 管道/TTY/无效输入、同包升级、源码来源双向确认/拒绝、旧三节点 metadata/URI/配置/监听、服务失败回滚/删除隔离通过。绑定成功/拒绝时两个存活节点 MainPID、配置、URI、监听保持不变；Release API 为夹具。
+- 本机 Caddy IPv4、IPv6、双栈高端口 HTTP/PID；双自建目标、真实启动失败后的 Caddy/元数据回滚、删除隔离、证书备份恢复及 SNI/端口/证书修改通过。
+- stability：三协议原生服务及本机 Reality HTTPS；签发失败夹具保留旧修订/监听；真实部分卸载失败回滚、finalizing 中断续做、清理通过。adoption：两个独立测试服务、三个协议的失败回退、中断恢复、接管及归还通过，原文件和启用策略保留，随后清理。
+
+timer/锁修复先冻结执行矩阵，最后的绑定写入错误回退另跑完整单元及实际来源/服务流程、最终候选追加恢复检查。此前中间批次因修改源码导致候选摘要断言而中止，清理后重跑，不计为最终通过。VPS 专用工具初次因缺失 SSH_CONNECTION 失败；已清理确切残留，修复资源分配前检查，再以 `SSH_CONNECTION='127.0.0.1 12345 8.8.8.8 22'` 作为**分享地址元数据夹具**运行本机测试。不是实有 SSH/VPS 地址，不代表向 8.8.8.8 发起节点联通测试；公网验证仍未完成。
+
+本轮命令（所有系统级工具仅在已核对为空的 Debian 13 amd64 WSL）：
+
+```bash
+python3 -m unittest discover -s tests -v
+bash -n install.sh
+.test-tools/shellcheck/extracted/usr/bin/shellcheck install.sh
+python3 nodepilot self-check
+python3 tools/native_check.py --download
+python3 tools/mihomo_check.py --download
+python3 tools/bootstrap_smoke.py --disposable --legacy-source .test-tools/legacy-source --legacy-source .test-tools/rc1-source --legacy-source .test-tools/rc2-source --legacy-source .test-tools/rc3-source --legacy-source .test-tools/rc4-before-source --legacy-source .test-tools/rc4-source-v2
+python3 tools/program_smoke.py --disposable --legacy-source .test-tools/legacy-source --legacy-source .test-tools/rc3-source
+python3 tools/complete_smoke.py --disposable --legacy-source .test-tools/legacy-source
+python3 tools/install_smoke.py
+python3 tools/install_smoke.py --legacy-source .test-tools/legacy-source
+python3 tools/source_smoke.py --disposable
+python3 tools/upgrade_smoke.py --legacy-app .test-tools/legacy-source
+python3 tools/service_smoke.py
+python3 tools/http_family_smoke.py
+# 下列工具在本地使用上文明确声明的 SSH_CONNECTION 元数据夹具。
+python3 tools/caddy_smoke.py setup
+python3 tools/caddy_smoke.py cleanup
+python3 tools/stability_smoke.py setup
+python3 tools/stability_smoke.py uninstall
+python3 tools/stability_smoke.py cleanup
+python3 tools/adoption_smoke.py setup
+python3 tools/adoption_smoke.py adopt
+python3 tools/adoption_smoke.py return
+python3 tools/adoption_smoke.py cleanup
+python3 tools/bootstrap_smoke.py --disposable --legacy-source .test-tools/rc4-source-v2
+```
+
+最终只读清理核验：NodePilot 安装/命令/续期单元和两种启用链接全部不存在；本轮 `/var/lib` 临时 Caddy/stability/adoption 目录无残留，systemd 无加载的 NodePilot 单元。测试缓存/原始日志仅在忽略目录保留，不上传。未停止或改写既有外部 Xray/sing-box/Caddy，也未改动全局防火墙、路由、IPv6、swap 或 sysctl。
+
+本轮官方 Xray 26.3.27、sing-box 1.14.3、Caddy 2.11.7 下载状态/官方 SHA-256/ELF/报告版本及 8 项原生配置检查通过；Mihomo 1.19.32 三协议导出原生解析通过。bash -n、ShellCheck 0.10.0、自检、Python 编译与 diff 空白检查通过。下载/解析不是客户端真实连接测试。
+
+自检进程在 Debian WSL 的一次观测为 0.214 秒、峰值 RSS 22596 KiB；这仅是短时自检进程，不能替代 1c/256MiB 整机与 ACME 峰值证明。实现只用标准库、短时 systemctl show、有界无跟随目录遍历；不新增依赖或常驻进程。
+
+### Review、外部缺口与发布判断
+
+聚焦审查覆盖：事务版本/阶段拒绝、complete 和 unlink 最后边界、完整候选验证、错误不冒充成功、回滚失败保留、只读入口、锁竞争/owner、timer 启用与运行的独立性、source 的前后校验/replace 后错误，以及外部服务和私有凭据边界。发现的四个附加 P2（含测试工具前提检查）已最小修复并回归。本轮范围暂未发现新的未修复明确 P0/P1/P2 代码缺陷；这不是对整个项目无缺陷的保证。持续磁盘 I/O 故障无法承诺回退落盘，必须报告未确认并人工核对，不能虚构文件恢复。
+
+**完整虚拟机重启：未完成；真实公网 VPS 重启/联通：未完成。** 当前没有指定授权可销毁 VPS/虚拟机和测试域名/Cloudflare Token，不访问生产主机、不终止其他 WSL 分发或代用其他项目凭据。真实 WSL systemd、Mock boot_id 和 SystemExit 中断明确区分；不会写成掉电/整机重启成功。
+
+剩余发布验收：真实 Cloudflare DNS-01 TXT 创建/传播/故障清理、Staging/正式签发及自动续期/插件脱敏，部分公网 IPv6，Ubuntu/arm64 及发行版全矩阵，1c/256MiB 低内存整机和长期负载，客户端 GUI，以及重启期间真实节点监听/证书续期行为。上述结果不能由 Mock/原生配置解析/WSL 代替。
+
+**建议现在冻结代码并进入正式发布验收**；保留 RC4 草稿，不建议直接合并或发布稳定版。最终本地候选包 SHA-256：`320bd03dcfbab066f1c38e837b13f2092d37cbb1d0910179073209d2eec3775b`，Windows/Linux 可复现一致，安装器重新绑定同一摘要。dist、测试内核、凭据、运行日志均不上传；默认 v0.4.0 Release 附件尚未发布，不把本地流程等同于公网安装验收。

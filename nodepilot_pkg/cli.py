@@ -19,6 +19,8 @@ def main(argv=None):
     commands.add_parser("renew", help="续期本项目 ACME 证书（由独立 timer 调用）")
     p=commands.add_parser('bind-source',help='显式授权并校验 GitHub 在线更新仓库')
     p.add_argument('repository');p.add_argument('--confirm',action='store_true')
+    p=commands.add_parser('finalize-program',help='人工核对 complete 后仅接受当前 timer 状态，仍校验全部程序证据')
+    p.add_argument('--review-timer',required=True,metavar='JOURNAL_SHA256')
     p = commands.add_parser("targets", help="在本 VPS 实测并筛选非 Cloudflare Reality 目标")
     p.add_argument("--domains", help="逗号分隔的 1–12 个候选域名；默认内置候选")
     p = commands.add_parser("render", help="离线生成服务端配置；不声称内核已验证")
@@ -31,12 +33,17 @@ def main(argv=None):
     try:
         if args.command=='bind-source':
             from .common import root_required
-            from .manager import Manager
             from .project_update import bind_repository
             root_required()
-            with Manager(migrate_owner=False).locked(migrate_owner=False):
-                bind_repository(args.repository,confirmed=args.confirm)
+            bind_repository(args.repository,confirmed=args.confirm)
             print('已显式绑定更新仓库；后续下载仍必须通过 Release 来源与 SHA-256 校验。')
+        elif args.command=='finalize-program':
+            from .common import root_required
+            from .manager import Manager
+            from .deploy import review_complete
+            root_required()
+            review_complete(Manager(migrate_owner=False),args.review_timer)
+            print('已按人工核对的 timer 状态完成只读最终化；服务策略未改变。')
         elif args.command == "render":
             atomic_json(args.output, generate(read_json(args.metadata)))
             print(f"配置已生成：{args.output}；需执行官方内核配置检查。")

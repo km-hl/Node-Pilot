@@ -43,18 +43,33 @@ class Manager:
             private_dir(self.state / directory)
 
     @contextmanager
-    def locked(self, migrate_owner=None):
+    def locked(self, migrate_owner=None, existing_only=False):
         import fcntl
-        self.initialize(migrate_owner=False)
+        if existing_only:
+            marker = self.state / '.owner'
+            if (self.state.is_symlink() or not self.state.is_dir() or marker.is_symlink() or
+                    not marker.is_file() or marker.read_text() not in {OWNER, LEGACY_OWNER}):
+                raise PilotError('只读状态锁需要现有合法配置所有权；未创建或修复状态目录。')
+        else:
+            self.initialize(migrate_owner=False)
         lock = self.state / ".lock"
-        with lock.open("a") as f:
-            lock.chmod(0o600)
+        # Never chmod/follow an external lock, or recreate missing state merely
+        # to approve a binding / read-only complete finalization.
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+        if not existing_only:
+            flags |= os.O_CREAT
+        with os.fdopen(os.open(lock, flags, 0o600), 'a') as f:
+            import stat
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode) or os.fstat(f.fileno()).st_nlink != 1:
+                raise PilotError('状态锁不是独占普通文件；拒绝操作外部路径。')
             try:
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as e:
                 raise PilotError("另一个 NodePilot 操作正在运行，请稍后重试。") from e
             try:
-                migrate = self.migrate_owner if migrate_owner is None else migrate_owner
+                if not existing_only:
+                    os.fchmod(f.fileno(), 0o600)
+                migrate = False if existing_only else self.migrate_owner if migrate_owner is None else migrate_owner
                 if migrate:
                     atomic_bytes(self.state / '.owner', OWNER.encode())
                 yield
@@ -68,6 +83,95 @@ class Manager:
         if path.is_symlink():
             raise PilotError("拒绝节点目录符号链接。")
         return path
+
+    def assert_transactions_idle(self, root):
+        """Read-only bind-source barrier. Never recover destructive operations here.
+
+        Pending files are active until their normal recovery removes them. Only
+        uninstall/adoption records have durable terminal phases; backups and
+        immutable revisions are deliberately outside this inventory.
+        """
+        def record(path):
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 256 * 1024:
+                raise PilotError(f'事务不是有界普通文件：{path}；来源未改变。')
+            value = read_json(path)
+            if not isinstance(value, dict) or type(value.get('schema')) is not int:
+                raise PilotError(f'未知/损坏事务：{path}；来源未改变。')
+            return value
+
+        def block(path):
+            raise PilotError(f'存在活动或未知事务：{path}；请先用可信管理器核对恢复，来源未改变。')
+
+        for path in (Path(root) / 'program-pending.json', self.state / 'core-pending.json'):
+            if path.exists() or path.is_symlink():
+                block(path)
+        uninstall = self.state / 'uninstall.json'
+        if uninstall.exists() or uninstall.is_symlink():
+            r = record(uninstall)
+            required = {'root','launcher','units','backup','nodes','removed','running','enabled',
+                        'renew','timer_enabled','timer_active','caddy_active'}
+            if (r['schema'] != 1 or not isinstance(r.get('phase'), str) or r['phase'] not in {'complete','rolled_back'} or
+                    not required <= set(r) or r['root'] != str(root) or
+                    r['launcher'] != '/usr/local/bin/nodepilot' or r['units'] != '/etc/systemd/system' or
+                    not isinstance(r['backup'], str) or not isinstance(r['nodes'], list) or
+                    any(not isinstance(n, dict) for n in r['nodes']) or
+                    not isinstance(r['removed'], list) or not isinstance(r['running'], dict) or
+                    not isinstance(r['enabled'], dict) or not isinstance(r['renew'], dict) or
+                    set(r['renew']) != {'nodepilot-renew.service','nodepilot-renew.timer'} or
+                    any(type(v) is not bool for v in r['renew'].values()) or
+                    not isinstance(r['timer_enabled'], str) or r['timer_enabled'] not in {'','disabled','enabled','enabled-runtime'} or
+                    type(r['timer_active']) is not bool or type(r['caddy_active']) is not bool):
+                block(uninstall)
+            ids = {validate(n)['id'] for n in r['nodes']}
+            if (len(ids) != len(r['nodes']) or set(r['running']) != ids or set(r['enabled']) != ids or
+                    any(type(v) is not bool for v in r['running'].values()) or
+                    any(not isinstance(v, str) for v in r['enabled'].values()) or
+                    any(not isinstance(v, str) or v not in ids for v in r['removed'])):
+                block(uninstall)
+
+        def children(directory):
+            if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+                block(directory)
+            if directory.exists():
+                yield from directory.iterdir()
+
+        for path in children(self.state / 'nodes'):
+            if path.is_symlink() or not path.is_dir():
+                block(path)
+            pending = path / 'pending.json'
+            if pending.exists() or pending.is_symlink():
+                block(pending)
+        for path in children(self.state / 'deletions'):
+            block(path)  # Deletion intents are removed only after durable cleanup.
+        from .adoption import Adoptions
+        adoptions = Adoptions(self)
+        for path in children(adoptions.root):
+            if path.is_symlink() or not path.is_dir():
+                block(path)
+            r = record(path / 'record.json')
+            if r['schema'] != 1 or not isinstance(r.get('phase'), str) or r['phase'] not in {'active','returned','rolled_back'}:
+                block(path)
+            if not isinstance(r.get('nodes'), list) or any(not isinstance(n, dict) for n in r['nodes']):
+                block(path)
+            r = adoptions.load(path.name)
+            if type(r.get('authorized')) is not bool or (r['phase'] in {'active','returned'} and not r['authorized']):
+                block(path)
+            source = r.get('source')
+            if (not isinstance(source, dict) or not isinstance(source.get('service'), str) or
+                    source.get('core') not in ('xray','sing-box') or not isinstance(source.get('config'), str) or
+                    not isinstance(source.get('files'), list) or not source['files'] or
+                    type(source.get('was_active')) is not bool or
+                    source.get('enabled') not in ('enabled','enabled-runtime','disabled','static')):
+                block(path)
+            for entry in source['files']:
+                if (not isinstance(entry, dict) or any(not isinstance(entry.get(k), str)
+                        for k in ('path','target','sha256','data'))):
+                    block(path)
+        credentials = self.state / 'credentials'
+        if credentials.is_symlink() or (credentials.exists() and not credentials.is_dir()):
+            block(credentials)
+        for path in children(credentials / 'pending'):
+            block(path)
 
     def revision(self, node_id):
         path = self.node_dir(node_id)
