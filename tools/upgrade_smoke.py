@@ -8,6 +8,7 @@ import shutil
 import socket
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
@@ -17,7 +18,7 @@ from nodepilot_pkg.manager import OWNER
 from nodepilot_pkg.share import share
 
 LEGACY_SCRIPT=r'''
-import json,secrets,socket,sys,uuid
+import json,secrets,socket,sys,uuid,shutil
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 from nodepilot_pkg.manager import Manager
@@ -41,6 +42,7 @@ with m.locked():
         else:n['tls']=dict(mode='selfsigned',certificate='/nonexistent',key='/nonexistent')
         nodes.append(m.apply(n,probe=False))
     atomic_json(base/'legacy-nodes.json',nodes)
+    shutil.copy2(m.backup(),base/'legacy-backup.json')
 print('legacy native services created')
 '''
 
@@ -82,6 +84,17 @@ def main():
         result=subprocess.run([sys.executable,'-c',script,str(args.legacy_app),str(m.state)],capture_output=True)
         assert result.returncode!=0,'old manager must refuse schema=2'
         print('v0.3 three nodes: metadata/URI/native checks/PID listeners preserved; edit+rollback and old manager schema refusal OK')
+        with m.locked():
+            for node in m.nodes():m.delete(node['id'])
+            preview=m.preview_restore(base/'legacy-backup.json')
+            # The original third-party Reality target is a network fixture;
+            # restore format/native services/URIs are verified here, not public TLS.
+            with patch('nodepilot_pkg.targets.inspect_target'),patch('nodepilot_pkg.targets.cloudflare_networks',return_value=[]),patch('nodepilot_pkg.manager.probe_reality'):
+                m.restore(base/'legacy-backup.json',expected_digest=preview['sha256'])
+            for node in m.nodes():
+                assert share(node)==links[node['id']] and m.services.runtime(node)['healthy']
+                if node['protocol']!='reality':assert node['tls']['mode']=='import'
+        print('ACTUAL v0.3 generated backup: new whole-bundle preview/restore, 3 REAL listeners and original URIs OK; Reality target network checks are fixtures')
     finally:
         if (m.state/'.owner').exists():
             with m.locked():

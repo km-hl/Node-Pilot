@@ -11,6 +11,8 @@ jobs:
         run: python3 tools/privacy_audit.py
       - name: Unit and transaction tests
         run: python3 -m unittest discover -s tests -v
+      - name: Real loopback Reality target TLS and HTTP screening
+        run: python3 tools/target_smoke.py --local
       - name: Bash syntax and shellcheck
         run: |
           bash -n install.sh

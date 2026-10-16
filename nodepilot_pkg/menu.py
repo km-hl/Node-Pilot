@@ -74,6 +74,7 @@ class Menu:
                 if info:
                     self.say(f"  证书：{info['status']}，剩余 {info['days']} 天；自动续期运行：{'是' if info['automatic_enabled'] else '否'}；最近：{info['last_renewal']['status']}")
                     self.say('  DNS 凭据：'+info['dns_credentials']+('；自动续期异常，请检查 Zone 权限/传播和私有日志' if info['renewal_failed'] else ''))
+                    if info['renewal_notice']:self.say('  '+info['renewal_notice'])
             except PilotError:
                 self.say('  证书状态暂不可读取。')
             from .connectivity import latest
@@ -312,7 +313,8 @@ class Menu:
                 sni = host(self.ask("第三方客户端 SNI"), public=True)
                 target = self.ask("第三方 Reality 目标 host:port", sni + ":443")
                 selected = inspect_target(target, sni, cloudflare_networks())
-                self.say(f"已通过非 CF/TLS1.3/h2/X25519/证书检查，中位时延 {selected['median_ms']} ms；{selected.get('warnings',[])}")
+                scope='当前网段/DNS 规范名/所选 IP 响应头未见 CF 特征' if selected.get('cf_screened') is True else 'CF 筛查未完成，不能确认；请核对分项结果'
+                self.say(f"TLS1.3/h2/X25519/证书通过；{scope}，中位时延 {selected['median_ms']} ms；{selected.get('warnings',[])}")
                 n["sni"] = sni
                 r.update(target=target, server_names=[sni], selection=selected)
                 r["xver"] = 0
@@ -478,9 +480,16 @@ class Menu:
                 self.say(f"私有备份（含密码和私钥）：{self.manager.backup()}")
         elif choice == "2":
             backup = self.ask("备份 JSON 绝对路径")
-            if self.confirm("恢复可信备份；证书恢复为导入模式，需要重新配置 ACME 才能自动续期"):
+            with self.manager.locked():
+                preview=self.manager.preview_restore(backup)
+            self.say(f"将恢复 {len(preview['nodes'])} 个节点：")
+            for n in preview['nodes']:
+                self.say(f"{n['id']} {n['name']}：{n['protocol']}；证书 {n['certificate_mode']} → {n['restored_mode']}；{n['notice']}")
+            if self.confirm("恢复上述可信备份；自动续期已关闭的节点需要重新配置，不恢复 DNS Token 或外部接管控制权"):
                 with self.manager.locked():
-                    self.say(f"已恢复 {len(self.manager.restore(backup))} 个节点。")
+                    self.say(f"已恢复 {len(self.manager.restore(backup,expected_digest=preview['sha256']))} 个节点。")
+                for n in preview['nodes']:
+                    if n['notice']:self.say(n['id']+'：'+n['notice'])
         elif choice == "3":
             n = self.select()
             if n["protocol"] == "reality":

@@ -251,6 +251,47 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual((cores.root / "xray/current").resolve(), old)
         self.assertTrue(self.services.active(n))
 
+    def test_core_recovery_preflights_all_service_owners_before_switch_or_restart(self):
+        a,b=self.create(),self.create(fixture(port=8443))
+        cores,old,candidate=self.configure_core_update();cores.switch('xray',candidate)
+        journal=self.manager.state/'core-pending.json';atomic_json(journal,{'schema':2,'core':'xray','old':str(old)})
+        (self.services.units/b['service']).write_text('externally modified')
+        before=journal.read_bytes()
+        with patch.object(self.services,'restart') as restart,self.assertRaises(PilotError),self.manager.locked():self.manager.recover_core()
+        restart.assert_not_called();self.assertEqual((cores.root/'xray/current').resolve(),candidate)
+        self.assertEqual(journal.read_bytes(),before);self.assertTrue(self.services.active(a))
+
+    def test_core_rollback_second_failure_keeps_intent_and_recovery_retries(self):
+        n=self.create();cores,old,candidate=self.configure_core_update()
+        with patch.object(cores,'stage',return_value=candidate),patch.object(cores,'check'), \
+             patch.object(self.services,'restart',side_effect=PilotError('restart and rollback failed')), \
+             self.assertRaises(PilotError),self.manager.locked():self.manager.update_core('xray')
+        pending=self.manager.state/'core-pending.json';self.assertTrue(pending.exists())
+        with self.manager.locked():self.manager.recover_core();self.manager.recover_core()
+        self.assertFalse(pending.exists());self.assertEqual((cores.root/'xray/current').resolve(),old)
+        self.assertTrue(self.services.active(n))
+
+    def test_corrupt_core_record_or_missing_old_binary_path_never_switches(self):
+        self.create();cores,old,candidate=self.configure_core_update();cores.switch('xray',candidate)
+        pending=self.manager.state/'core-pending.json'
+        for record in ({'schema':99,'core':'xray','old':str(old)}, {'schema':2,'core':'xray'},
+                       {'core':'xray','old':str(old.parent/'missing')},{'core':'xray','old':None}):
+            atomic_json(pending,record);before=pending.read_bytes()
+            with patch.object(self.services,'restart') as restart,self.assertRaises(PilotError),self.manager.locked():self.manager.recover_core()
+            restart.assert_not_called();self.assertEqual(pending.read_bytes(),before)
+            self.assertEqual((cores.root/'xray/current').resolve(),candidate)
+
+    def test_service_unknown_fragment_query_cannot_authorize_install(self):
+        from nodepilot_pkg.services import Services
+        services=Services(self.manager.state,self.services.units)
+        with patch('nodepilot_pkg.services.run',side_effect=PilotError('systemd unavailable')) as command,self.assertRaises(PilotError):
+            services.install(fixture())
+        self.assertEqual(command.call_count,1);self.assertFalse(list(self.services.units.iterdir()))
+        n=fixture();path=self.services.units/n['service'];path.write_text(services.content(n));before=path.read_bytes()
+        with patch('nodepilot_pkg.services.run',return_value='/run/systemd/transient/'+n['service']) as command,self.assertRaisesRegex(PilotError,'其他位置'):
+            services.remove(n)
+        self.assertEqual(command.call_count,1);self.assertEqual(path.read_bytes(),before)
+
 
 class PortTests(unittest.TestCase):
     def test_tcp_udp_same_port_allowed(self):

@@ -1,6 +1,6 @@
 # v0.4.0 RC4：安装器事务保护与发布前验收
 
-本页保留历次 RC4 历史证据（行号对应当时提交）。**当前结论以文末“RC4 非 complete 跨启动恢复”一节为准**，基线 `587de90`；不创建 RC5。前文测试、产物摘要和环境结论不能代替最新节的本轮验证。
+本页保留历次 RC4 历史证据（行号对应当时提交）。**当前结论以文末“RC4 Reality 检测与便携恢复稳定性”一节为准**，基线 `42d4bbf`；不创建 RC5。前文测试、产物摘要和环境结论不能代替最新节的本轮验证。
 
 日期：2026-10-15。分支 `codex/v0.4.0-stability`，现有 [PR #1](https://github.com/km-hl/Node-Pilot/pull/1)。开始前 fetch 并核对 GitHub，最新提交仍为审查基线 `5a7a6ab83d51bcef1d1d6bd1956693f54def8f58`。修改前 Linux 完整基线 159 项通过。PR 保持草稿，不合并 main，不创建 Release。
 
@@ -259,7 +259,7 @@ python3 tools/bootstrap_smoke.py --disposable --legacy-source .test-tools/rc4-so
 
 **建议现在冻结代码并进入正式发布验收**；保留 RC4 草稿，不建议直接合并或发布稳定版。最终本地候选包 SHA-256：`320bd03dcfbab066f1c38e837b13f2092d37cbb1d0910179073209d2eec3775b`，Windows/Linux 可复现一致，安装器重新绑定同一摘要。dist、测试内核、凭据、运行日志均不上传；默认 v0.4.0 Release 附件尚未发布，不把本地流程等同于公网安装验收。
 
-## RC4 非 complete 跨启动恢复（当前结论）
+## RC4 非 complete 跨启动恢复（历史结论）
 
 2026-10-16，开始前 fetch 并核对远端分支及现有草稿 PR #1，均为审查基线 `587de90e5aa3a8cbe1798f55385dd57643467bd3`，问题仍存在。仅在原开发分支修复 P1；不创建 RC5、新 PR 或 Release，不合并 main。以下行号对应本轮最终源码，前文是历史结果。
 
@@ -361,3 +361,144 @@ Xray **26.3.27**、sing-box **1.14.3**、Caddy **2.11.7** 的下载校验/ELF/�
 仍未完成：真实 Cloudflare DNS-01 创建/传播/故障清理、Staging/正式签发与自动续期、部分公网 IPv6、Ubuntu/arm64 及发行版矩阵、1c/256MiB 整机/长期负载、客户端 GUI，以及真实重启时节点监听与续期行为。前轮 Caddy/stability/adoption 完整工具证据仍为历史，本轮没有把未重跑的历史结果算入 11 条命令。
 
 **建议冻结功能和本轮修复代码，进入 v0.4.0 最终发布验收；保留 RC4 草稿，尚不建议正式 Release。** 本地候选 SHA-256：`22e073c8622e39f2868c2fb4eb3fdb9ff546805e6515bf673ece0fff19c33573`。产物、测试内核及原始日志仅在忽略目录，不上传凭据或运行数据；公网 Release 附件仍未发布。
+
+## RC4 Reality 检测与便携恢复稳定性（当前结论）
+
+2026-10-16，开始执行 fetch，确认本地、远端分支及 PR #1 都为 `42d4bbf8ec260a0d476341a97f5eb3ccab01dd1d`，工作区干净。在现有 `codex/v0.4.0-stability` 修复，不合并 main，不创建 RC5/新 PR/正式 Release，PR 继续 Draft。下列位置对应本轮源码。
+
+### 问题、修复与代码位置
+
+| 等级/位置 | 根因 | 本轮行为 |
+|---|---|---|
+| P2 `targets.py:306,313,360` | 复查以客户端 SNI 解析结果与固定目标 IP 比较；target 与 SNI 可以不同，旧记录没有原始目标证据。 | 只有匹配当前 target/SNI/端口的 selection.requested_target 域名用于漂移比较。原始 IP 不适用；缺失、失配、未固定或 DNS 失败未知。多 A/AAAA 使用地址值成员判断，兼容 IPv6 不同写法；固定目标、节点和服务不变。身份包含选站记录，避免复用不匹配诊断。 |
+| P2 `targets.py:88,93,133,217,283`、`menu.py:316` | HTTP 失败被当作警告继续，但顶层 cf_screened 始终 True；自动排名未检查验证范围。 | 分项记录官方网段、系统可见 DNS/规范名、所选 IP 响应头、TLS 条件；HTTP 未验证则 cf_screened=False，自动排名排除，优先完整检查地址。CF 特征在任一已测地址出现就排除整候选；保留默认候选排除策略。 |
+| P2 `manager.py:512,568,571`、`certificates.py:147,172,180`、`menu.py:77,476` | 逐个应用备份，后续节点损坏时前面的服务可能已启动；ACME 转导入、移除 DNS 引用仅有通用提示。adoption 标记可能指向目标机不存在的记录。 | 全体待恢复节点预检后展示数量/协议/原与恢复证书模式，按预览 SHA-256 重新验证再应用。持久化续期关闭提醒，不恢复授权/Token。含 adoption 节点提前拒绝，不导入历史外部控制权。失败清理逐项尝试，清理再次失败报告剩余 ID 与保留证据。 |
+| 附加 P2 `services.py:36` | 同名单元 FragmentPath 查询失败被转换为空，可能在无法确认 systemd 状态时继续安装。 | 查询失败直接拒绝，未写服务/未 reload；正常缺失单元仍允许安装。 |
+| 附加 P2 `manager.py:470` | 内核恢复切换前未一次性预检全部受影响单元，可能在后一个外改服务上失败前已切核/重启其他节点；Caddy 旧配置损坏也到切核后才发现。 | 先检查全部服务 owner/drop-in、旧目录和 Caddy 证据编码/JSON，再切核/重启；拒绝缺失、链接、越界、未知 schema 与无旧内核却有节点的记录。失败保留原 journal；原子切换/节点回滚机制复用。 |
+| 附加 P2 `services.py:36,88` | 最后真实 smoke 出现 AnyTLS clean active/running 但首个轮询尚无监听，原立即回滚。磁盘单元自有也未单独核对已加载 FragmentPath。 | 在任何服务操作前核对实际加载路径；首次就绪允许最多 8 个 0.5 秒轮询（不含 systemctl 调用耗时），随后仍需 8 次稳定 PID/监听。重启/退出/异常状态或稳定期丢监听不获宽限，超限失败回滚。 |
+
+CF 范围严格限定为 [当前官方公开 IP 段](https://www.cloudflare.com/ips/)、系统 getaddrinfo 的 A/AAAA/可见规范名与所选 IP 头部；[getaddrinfo 的 AI_CANONNAME](https://docs.python.org/3/library/socket.html#socket.getaddrinfo) 不是完整 CNAME 链审计，也不证明完全没有 CF。所有 IP/CNAME/HTTP/TLS 项分开呈现。`feasible` 只表示 TLS 条件满足，`cf_screened` 只表示声明范围已检查，未测/失败 IP 单独列出，不能推广到所有地址、未来 DNS 或长期客户端联通。
+
+HTTP 301/302 记录未跟随跳转，403/404 等是网页质量提示，仍可检查有效最终头部；HTTP 超时、拒绝连接、地址族不可达、证书错误、TLS 错误及无效/未完成响应分别分类。解析拒绝不完整 1xx 或坏响应，合并重复同名头，避免后一个 Server 隐藏前面的 Cloudflare 特征。TLS1.3/X25519/h2/可信链与 SNI 验证保持，不因网页状态码放宽。
+
+### 备份恢复与兼容性
+
+恢复仍要求空节点集合，并先拒绝活动/未知事务和外部同名单元。全体待恢复节点先检查元数据、ID/端口冲突、证书 base64/大小/有效期/SAN/私钥配对、各协议内核原生配置、自建目标及 Caddy 聚合配置，再修改服务。预览与应用之间按文件 SHA-256 检测备份变化；应用前再次完整校验，避免把预览当授权后无条件信任。预览可以创建/清理本项目私有临时验证文件，不启动/停止服务。
+
+ACME HTTP-01/DNS-01 和 Caddy acme/dns01 转 import 后显示 **自动续期已关闭，需要重新配置**。节点 restoration 记录保存原证书模式及关闭提醒，菜单列表和证书详情可继续查看；显式重新配置 ACME 后以当前模式为准，不持续显示过时关闭状态。调用既有 dns_credentials.profiles 检查恢复结果无凭据引用，复用凭据安全边界，不为本轮改动 Token 存储实现。备份及原 Token 文件保持，既不复制也不重绑定。导入/自签名也使用 import，客户端信任要求不会因此消失。
+
+兼容 schema=1 普通旧备份，包括没有 adoptions 字段的 v0.3 格式；协议、配置与分享编码不变。选站 checks/restoration 都是增量元数据，不升级节点或程序事务 schema（程序仍 v4），旧选站单一布尔值显示范围未知、建议复查。带 adoption 标记的便携恢复现在明确拒绝，这是有意的安全收紧：不能自动迁移外部服务控制权，不能剥掉标记后保留仅接管允许的弱认证/旧 TLS 行为。应保留原机私有记录并核对/归还，或在目标机重新显式导入；原接管/归还能力不变。
+
+整包恢复不是一个新的原子事务；复用每节点 durable pending/回滚。中途失败撤回本轮已恢复节点，若撤回也失败继续尝试其他项，报告剩余 ID；保留节点修订、相关事务和原备份供人工核对，不报全包完成。已有节点集合一开始就拒绝覆盖。程序升级、complete 只读最终化、timer 启用/运行独立策略与跨启动语义没有重新实现，仅回归。
+
+### 单元、传输与原生检查
+
+**236 项单元测试通过，0 failure/error/skip**，基线 212 项，本轮新增 **24 个方法**，没有把子场景或重复导入 TestCase 计入方法数。
+
+- `tests/test_targets.py`：8 个新增方法，覆盖原 target 与 SNI 分离、多 A/AAAA/IPv6 等价、IP/旧记录/DNS 失败、CF 头、HTTP 异常分类、未完整检查排除、较快未知 IP 不覆盖较慢完整 IP、IPv6 不可达、坏/未完成响应与重复头。
+- `tests/test_restore.py`：8 个方法，包含全包后节点证书/编码/密钥/内核/metadata/ID/端口/adoption/缺文件/schema 故障，凭据不变/续期关闭持久提示、Caddy 两种自动模式、预览摘要变化、旧备份、外部服务、重启与清理再次失败、活动损坏事务和写配置故障。
+- `tests/test_manager.py`：4 个方法，覆盖全体服务预检、内核回滚再次失败及幂等重试、损坏/缺旧目录记录、systemd 查询失败不授权安装。
+- `tests/test_menu.py`：1 个方法，验证完整预览在确认之前，摘要传到应用；`test_release_candidate.py`：1 个方法，损坏 Caddy 证据在切核前拒绝。既有 DNS/排名/Caddy 夹具按新保守语义调整，FakeCaddy 的非 PEM 夹具仅在该旧测试模拟证书验证，新增恢复测试使用真实 OpenSSL 证书。
+- `tests/test_features.py`：2 个方法，验证首次延迟成功、永久无监听超限、重启、PID 改变及稳定后丢监听，以及测试客户端退出/超时/监听归属；已有所有权负例扩展实际加载路径不符时无 stop/文件变更。
+
+最终完整单元命令：`python3 -m unittest discover -s tests -v`，本机 Debian 13 WSL 11.885 秒。Python 编译、`bash -n install.sh`、ShellCheck 0.10.0、自检和 diff 检查通过。Xray 26.3.27、sing-box 1.14.3、Caddy 2.11.7 下载校验/ELF/报告版本及 **8 项原生配置检查**通过；Mihomo 1.19.32 三协议导出解析通过。
+
+新增 `tools/target_smoke.py --local` 的最终 **9 个真实 loopback TLS/HTTP 场景**通过：200/301/302/403/404、CF 头拒绝、无效 HTTP 标未知、SNI/证书不匹配拒绝，以及真实 TCP 拒绝连接独立分类。OpenSSL 和 Python TLS 均使用真实握手，正常验证测试证书；只有 DNS、官方网段是明确夹具。该工具已加入 CI，不宣称真实候选站适配。
+
+新增 `tools/restore_smoke.py --disposable` 已在真实 WSL systemd 验证：后节点损坏证书/不兼容内核夹具在任何 restart 前拒绝；两真实 AnyTLS/HY2 服务恢复为 import 后监听健康、原 URI 相同、Token 字节不变；非空集合重复恢复拒绝且真实 PID/修订不变。ACME 元数据是夹具，没有真实签发。
+
+中间失败记录：旧测试将无证据 DNS 推断/缺 CF 完成字段当成功，已改为匹配真实新契约；FakeCaddy 旧文本 PEM 需显式隔离。新测试一次遗漏 base64 导入、传输工具一次读取错误的状态字段，均已修正并重跑。首次方法统计包含导入的整个 TestCase，已移除重复发现。补证书有效期/SAN 子场景时误与系统安装矩阵并行，单元观察到演练中的实际活动日志/runtime 链接而失败；24 条演练完成并清理后重新串行执行，最终只采用 236 项通过结果。没有放宽生产安全检查来迁就并行测试。
+
+Windows/Linux 可复现包摘要一致，安装器绑定 `f484151fb00c02d98cd2be0bd6cf76cd0c09e7acad42f5e35aef093600eca210`。完整 smoke/清理及提交后的范围审计结果记录如下。
+
+### 集成矩阵与复现命令
+
+固定源码第一批 **24 条工具命令全部退出 0**。收尾核对又将新增的 core-pending 普通文件上限校正为 512KiB，给合法最大 256KiB Caddy 旧配置的 base64 JSON 预留空间；既有精确字节恢复测试使用 210KiB 原配置，验证编码后大于 256KiB 的合法日志仍能恢复。最终还细化 TLS TCP 拒绝连接分类、追加真正 v0.3 程序生成的备份恢复。完整单元和目标传输已针对最终代码重跑；上述增量的最终恢复/安装/Caddy/原生复核另行记录，不把中间通过冒充未经复核的最终代码。
+
+| 工具 | 本轮场景与边界 |
+|---|---|
+| recovery_smoke / --manual-only | v0.3/42d4bbf 两旧基线，六状态 × intent/reloaded/rollback-launcher 共 **36 组**混合证据场景，人工精确摘要 **4 组**。真实状态/链接，模拟 boot ID/单调时钟，未 reboot。 |
+| program_smoke | 两基线 × 六状态 × 成功/失败/中断 **36 组真实同 boot systemd**，首次成功/失败另 2 组。 |
+| bootstrap_smoke | v0.3/42d4bbf/RC3 × intent/current/checked **9 组**，旧入口保护与重复恢复/备份不变。 |
+| complete_smoke | 六状态各严格只读/人工确认 **12 组**；程序/单元 inode/mtime、备份保持。 |
+| install（含旧 v0.3）/ source / upgrade | 单入口、TTY/管道、来源控制、旧三协议 metadata/URI/native/监听兼容；最终另测由真正 v0.3 管理器生成的原始备份，当前全包预览/恢复后 3 真实监听与 URI 一致（第三方 Reality 目标网络筛选是夹具）。 |
+| service / http_family | 真实服务重启失败回滚、删除隔离及 bind-source 时真实 PID/配置/URI/监听不变；本地高端口 IPv4/IPv6/双栈 Caddy HTTP。 |
+| caddy setup/cleanup | 双自建目标、真实 Xray 端口抢占后的 Caddy/metadata 回滚、单节点删除隔离、两目标证书备份恢复和 SNI/端口/证书修改。 |
+| stability setup/uninstall/cleanup | 三协议真实服务、本机 Reality HTTPS；续期网络失败夹具保留旧修订/证书/监听；部分卸载失败还原，以及 finalizing 中断续做。 |
+| client_probe（2 条） | sing-box 客户端三协议各 2 × 1MiB，Xray 客户端 Reality 2 × 1MiB，总 **8MiB 本地加密传输**，正常证书验证及内容 SHA-256。 |
+| adoption setup/adopt/return/cleanup | 两个临时独立源服务、三个协议，原文件/启用状态、故障恢复、接管及归还通过并清理。没有操作真实外部业务。 |
+
+所有系统级工具仅在已核对为空的可销毁 Debian 13 amd64 WSL 串行。VPS 专用工具的 `SSH_CONNECTION='127.0.0.1 12345 8.8.8.8 22'` 是明确的分享地址元数据夹具，没有向该地址发起节点测试。client_probe 在本轮将私有测试 URI 的服务器临时映射为 127.0.0.1，随后恢复原字节；工具原输出字段 external_encrypted_transfer 不代表本轮经过公网，原始日志首行及本报告均标明 **LOCAL LOOPBACK ONLY**。Release API 部分仍是夹具。正常证书验证没有被关闭。
+
+主要命令（归档旧源码和原始日志只在忽略目录）：
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q nodepilot_pkg tests tools
+bash -n install.sh
+.test-tools/shellcheck/extracted/usr/bin/shellcheck install.sh
+python3 nodepilot self-check
+python3 tools/native_check.py --download
+python3 tools/mihomo_check.py --download
+python3 tools/target_smoke.py --local
+python3 tools/restore_smoke.py --disposable
+python3 tools/recovery_smoke.py --disposable --legacy-source .test-tools/legacy-source --legacy-source .test-tools/rc4-baseline-42d4bbf
+python3 tools/recovery_smoke.py --disposable --manual-only --legacy-source .test-tools/legacy-source --legacy-source .test-tools/rc4-baseline-42d4bbf
+python3 tools/program_smoke.py --disposable --legacy-source .test-tools/legacy-source --legacy-source .test-tools/rc4-baseline-42d4bbf
+python3 tools/bootstrap_smoke.py --disposable --legacy-source .test-tools/legacy-source --legacy-source .test-tools/rc4-baseline-42d4bbf --legacy-source .test-tools/rc3-source
+python3 tools/complete_smoke.py --disposable --legacy-source .test-tools/legacy-source
+python3 tools/install_smoke.py
+python3 tools/install_smoke.py --legacy-source .test-tools/legacy-source
+python3 tools/source_smoke.py --disposable
+python3 tools/upgrade_smoke.py --legacy-app .test-tools/legacy-source
+python3 tools/service_smoke.py
+python3 tools/http_family_smoke.py
+# 下列工具使用上文显式声明的地址夹具，互相串行。
+python3 tools/caddy_smoke.py setup
+python3 tools/caddy_smoke.py cleanup
+python3 tools/stability_smoke.py setup
+# 在私有 clients.json 服务器映射至 127.0.0.1 后，正常校验证书：
+python3 tools/client_probe.py --private-dir /var/lib/nodepilot-stability-test-<本次随机ID> --requests 2 --parallel 2
+python3 tools/client_probe.py --private-dir /var/lib/nodepilot-stability-test-<本次随机ID> --requests 2 --parallel 2 --protocol reality --reality-core xray
+python3 tools/stability_smoke.py uninstall
+python3 tools/stability_smoke.py cleanup
+python3 tools/adoption_smoke.py setup
+python3 tools/adoption_smoke.py adopt
+python3 tools/adoption_smoke.py return
+python3 tools/adoption_smoke.py cleanup
+python3 tools/package.py --repo km-hl/Node-Pilot
+python3 tools/privacy_audit.py --staged
+python3 tools/release_audit.py
+```
+
+实际临时 ID 由工具输出和私有状态记录取得，不复制上述尖括号占位符执行。升级/备份/目标模块最后变更后，完整 236 项与目标 9 场景已通过，最终又执行 upgrade、restore、install、caddy setup/cleanup 和缓存内核原生检查；这些最终命令结果及清理需以下收尾核验为准。
+
+### 风险与正式发布验收
+
+本轮发现的 DNS 漂移、CF 成功语义、恢复预检/提示和三个附加 P2 已修复；未发现本轮范围新增未修复的明确 P0/P1/P2。完整系统审计、全项目无缺陷或整包原子恢复都不是本轮证明。持续磁盘 I/O 故障/回滚再次失败仍需保留证据人工核对，不能承诺总能还原。
+
+补充边界失败如实记录：最终追加服务来源检查后，真实 service_smoke 的 AnyTLS 在 active/running/exit=0/restarts=0 时首轮尚未观察到自有监听，正确撤回该新节点并清理，但过早判断不利于慢启动。新增首次有界就绪等待与 5 种单元子场景；236 项全量重新通过。该服务公共路径修复后，再串行复跑受影响的节点、安装、旧版备份恢复、Caddy、传输、卸载及接管/归还工具，结果单独收尾核验，不将这次失败算作通过。
+
+19 条追加流程的首次客户端传输因本地测试代理尚无监听而中断；原 client_probe 的等待循环耗尽后仍会继续发请求，不能区分客户端退出/未就绪/外部占用。仅修正测试工具为有界进程存活与自有 PID 监听检查，并补充退出/超时/成功单元场景，生产 payload 不因该工具变更而改变。保留首次失败日志，核对剩余测试状态 owner 后续跑：两个客户端、卸载清理及接管归还全部通过，19 项最终成功结果完整。没有降低 TLS、完整性或节点健康要求，也不将首次失败算作通过。
+
+**适合冻结代码并进入授权可销毁 VPS 的最终验收，尚不满足正式 Release 条件。** 三协议、终端管理、版本选择、接管归还、证书/Token 生命周期、脚本来源与显式绑定、complete/timer 恢复保留；没有新协议/依赖/常驻进程，没有全局防火墙、路由、DNS、IPv6、swap、sysctl 操作，没有使用生产凭据或生产主机。
+
+必须补齐的实机验收：
+
+- 真正 VM/VPS reboot/升级故障恢复及续期 timer 启动策略，不能由 Mock boot 或 WSL systemd 替代。
+- 授权域名的 Cloudflare DNS-01 TXT 创建/传播/失败清理、Staging/正式签发、自动续期与实际插件脱敏；HTTP-01 的公网 TCP80/云安全组和双栈。
+- 公网 IPv4-only/IPv6-only/双栈节点端到端连接及 HY2 UDP/云安全组诊断；本机 IPv6 不能代表公网 IPv6。
+- Debian 12/13、Ubuntu 22.04/24.04、amd64/arm64 的真实安装/升级/恢复；CI 的 Ubuntu 单元/原生检查不等于这些 VPS 全流程。
+- 已有独立 sing-box/Xray、3x-ui、Caddy/Docker/网站反代及 80/443 占用的真实共存演练；本轮临时独立源服务和拒绝测试不能覆盖所有面板/容器部署。
+- 1c/256MiB 整机的安装/更新/ACME 峰值及长期负载；本次 WSL 服务空闲进程 RSS 124512 KiB 不包含整机或 ACME 峰值，不能保证三协议同时稳定运行。
+- Mihomo/v2rayN/Egern 等客户端 GUI 导入/正常证书验证及真实公网传输。下载/API 不可用的拒绝/回滚测试保留，但仍需目标网络环境的安装与断网恢复验收。
+
+真实公网 VPS 测试、整机 reboot、真实 DNS-01 签发/自动续期、arm64/低内存整机/GUI：**本轮均未验证**。建议继续保留 PR #1 为 Draft，完成上述条件后再决定合并/正式发布。
+
+### 收尾核验
+
+最终代码的 236 项单元、9 个真实目标传输场景、实际 v0.3 备份升级恢复、备份策略 smoke、新安装、Caddy setup/cleanup 与 8 项缓存内核原生检查均通过。合计 **49 条 smoke 命令成功完成**（固定批次 24 条，增量复测 6 条，服务边界修复后重跑 19 条；原生检查、单元和静态检查另计）。最终批次无 failure/error/skip；中间调试失败及并行测试干扰已在上文说明，不计为最终通过。
+
+清理确认：NodePilot 程序/状态/命令/续期单元及 /etc、/run 启用链接均不存在，无加载的 nodepilot-* 单元，/var/lib/nodepilot-*-test-* 与 /run/nodepilot-restore-test-* 无残留。87 个允许公开的 Git 暂存文件范围/敏感信息审计通过；22 个修改/新增文件均为公开源码、测试、文档和 CI，没有 dist/二进制/配置/Token/原始日志上传。最终候选 Windows/Linux/dist 包字节摘要一致，源与 dist 安装器逐字节一致，SHA-256 为 `f484151fb00c02d98cd2be0bd6cf76cd0c09e7acad42f5e35aef093600eca210`。
+
+本轮修改清单：targets.py、manager.py、certificates.py、menu.py、services.py；test_features.py、test_targets.py、test_restore.py、test_manager.py、test_menu.py、test_caddy.py、test_release_candidate.py；tools/target_smoke.py、restore_smoke.py、upgrade_smoke.py、client_probe.py；install.sh 的摘要绑定、.github/workflows/check.yml 的本地传输步骤；README、CHANGELOG、REALITY_FLOW 和本报告。关键函数/测试位置及复现命令见上文；最终提交 SHA 与远端 PR/CI 核验在交付答复及 PR 中给出。正式 v0.4.0 附件仍未发布。

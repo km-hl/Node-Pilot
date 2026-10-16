@@ -98,6 +98,9 @@ class FakeCaddy:
     def ready(self, n):
         pass
 
+    def check(self, nodes):
+        pass
+
     def certificate_files(self, n):
         return {"certificate.pem": Path(n["caddy"]["certificate"]), "key.pem": Path(n["caddy"]["key"])}
 
@@ -165,7 +168,10 @@ class CaddyTransactionTests(unittest.TestCase):
         with self.manager.locked():
             backup = self.manager.backup()
             self.manager.delete(a["id"])
-            ids = self.manager.restore(backup)
+            # FakeCaddy writes text fixture PEMs; real validation is covered by
+            # restore/OpenSSL tests and the native Caddy smoke.
+            with patch('nodepilot_pkg.certificates.validate_pair'):
+                ids = self.manager.restore(backup)
         self.assertEqual(ids, [a["id"]])
         self.assertEqual(self.manager.get(a["id"])["caddy"]["certificate_mode"], "import")
         self.assertEqual(self.caddy.nodes[0]["reality"]["mode"], "self")

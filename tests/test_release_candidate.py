@@ -236,7 +236,9 @@ class TargetRC2Tests(unittest.TestCase):
 
     def test_manual_fixed_ip_failure_and_dns_drift_never_change_node(self):
         from nodepilot_pkg.targets import recheck_target,target_status
-        n=fixture();n['reality']['target']='8.8.8.8:443';original=copy.deepcopy(n)
+        n=fixture();n['reality']['target']='8.8.8.8:443'
+        n['reality']['selection']={'target':n['reality']['target'],'requested_target':'origin.example.com:443','sni':n['sni']}
+        original=copy.deepcopy(n)
         with tempfile.TemporaryDirectory() as d, patch('nodepilot_pkg.targets.resolve',return_value=(['8.8.4.4'],set())), \
              patch('nodepilot_pkg.targets.cloudflare_networks',return_value=[]), \
              patch('nodepilot_pkg.targets.inspect_target',side_effect=PilotError('TLS failed')):
@@ -1216,11 +1218,25 @@ class CaddyRollbackRC2Tests(unittest.TestCase):
             root=Path(d);cores=FakeCores();cores.root=root/'cores';cores.switch=MagicMock()
             old=cores.root/'caddy/old';old.mkdir(parents=True)
             m=Manager(root/'state',cores,FakeServices(root/'units'));m.initialize();m.caddy=MagicMock()
-            data=b'{"legacy":"unchanged"}'
+            data=b'{"legacy":"unchanged"}'+b' '*(210*1024)
             atomic_json(m.state/'core-pending.json',{'schema':2,'core':'caddy','old':str(old),
                 'caddy_previous':base64.b64encode(data).decode()})
+            self.assertGreater((m.state/'core-pending.json').stat().st_size,256*1024)
             m.recover_core();m.recover_core()
             m.caddy.restore_configuration.assert_called_once_with(data)
+
+    def test_corrupt_caddy_snapshot_rejected_before_core_switch(self):
+        import base64
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);cores=FakeCores();cores.root=root/'cores';cores.switch=MagicMock()
+            old=cores.root/'caddy/old';old.mkdir(parents=True)
+            m=Manager(root/'state',cores,FakeServices(root/'units'));m.initialize();m.caddy=MagicMock()
+            for data in ('!broken!',base64.b64encode(b'not json').decode()):
+                atomic_json(m.state/'core-pending.json',{'schema':2,'core':'caddy','old':str(old),'caddy_previous':data})
+                before=(m.state/'core-pending.json').read_bytes()
+                with self.assertRaises(PilotError):m.recover_core()
+                cores.switch.assert_not_called();m.caddy.restore_configuration.assert_not_called()
+                self.assertEqual((m.state/'core-pending.json').read_bytes(),before)
 
     def test_power_loss_restores_exact_legacy_caddy_configuration(self):
         from test_caddy import self_node

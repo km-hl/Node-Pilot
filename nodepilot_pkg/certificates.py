@@ -1,5 +1,6 @@
 """Local certificates and isolated certbot HTTP-01 lineages; no curl|sh ACME."""
 import ipaddress
+import base64
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -143,6 +144,39 @@ def holder(n):
         'certificate':c.get('certificate','/nonexistent'), 'key':c.get('key','/nonexistent')}}
 
 
+def restore_import(n, files, directory):
+    """Portable certificates never restore ACME authorization or DNS credentials."""
+    caddy=n['protocol']=='reality'
+    settings=n['caddy'] if caddy else n['tls']
+    mode_key='certificate_mode' if caddy else 'mode'
+    original=settings[mode_key]
+    if set(files)!={'certificate.pem','key.pem'}:
+        raise PilotError('备份缺少证书/私钥，或包含不支持的文件。')
+    for name,limit in (('certificate.pem',256*1024),('key.pem',64*1024)):
+        try:
+            data=base64.b64decode(files[name],validate=True)
+        except (ValueError,TypeError):
+            raise PilotError('备份证书/私钥编码损坏。') from None
+        if not data or len(data)>limit:
+            raise PilotError('备份证书/私钥大小异常。')
+        atomic_bytes(directory/name,data)
+    validate_pair(directory/'certificate.pem',directory/'key.pem',n['sni'])
+    settings.update({mode_key:'import','certificate':str(directory/'certificate.pem'),'key':str(directory/'key.pem')})
+    for key in ('dns','challenge','domain','email','http01_listen'):
+        if key!='domain' or not caddy:settings.pop(key,None)
+    if original in {'acme','dns01'}:
+        n['restoration']={'certificate_mode':original,'automatic_renewal_disabled':True}
+    return original
+
+
+def renewal_notice(n):
+    settings=n.get('caddy',{}) if n['protocol']=='reality' else n.get('tls',{})
+    mode=settings.get('certificate_mode') if n['protocol']=='reality' else settings.get('mode')
+    if mode=='import' and n.get('restoration',{}).get('automatic_renewal_disabled') is True:
+        return '自动续期已关闭，需要重新配置 ACME / DNS-01；未恢复或绑定 DNS Token'
+    return ''
+
+
 def information(n, state=Path('/etc/nodepilot'), files=None):
     if n['protocol'] == 'reality':
         if n.get('reality',{}).get('mode') != 'self':
@@ -154,6 +188,7 @@ def information(n, state=Path('/etc/nodepilot'), files=None):
         certificate = n['tls']['certificate']
         automatic = n['tls']['mode']=='acme'
     result = {'domain':n['sni'], 'automatic':automatic, 'status':'未验证', 'issuer':'未知', 'expires':'未知', 'days':None}
+    result['renewal_notice']=renewal_notice(n)
     try:
         output = run(['openssl','x509','-in',certificate,'-noout','-issuer','-enddate','-nameopt','RFC2253'])
         fields = dict(line.split('=',1) for line in output.splitlines() if '=' in line)

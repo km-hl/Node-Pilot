@@ -102,6 +102,35 @@ class DnsSecurityTests(unittest.TestCase):
 
 
 class HealthTests(unittest.TestCase):
+    def test_probe_client_requires_owned_listener_or_fails_before_transfer(self):
+        from tools.client_probe import wait_client
+        from unittest.mock import MagicMock
+        process=MagicMock();process.pid=100;process.poll.return_value=2
+        with patch('tools.client_probe.socket.create_connection') as connect,self.assertRaises(PilotError):wait_client(process,12345)
+        connect.assert_not_called()
+        process.poll.return_value=None
+        with patch('tools.client_probe.socket.create_connection'),patch('tools.client_probe.listening',return_value=True):wait_client(process,12345)
+        with patch('tools.client_probe.time.monotonic',side_effect=[0,0,11]), \
+             patch('tools.client_probe.time.sleep'),patch('tools.client_probe.socket.create_connection'), \
+             patch('tools.client_probe.listening',return_value=False),self.assertRaises(PilotError):wait_client(process,12345)
+
+    def test_initial_listener_delay_is_bounded_and_never_excuses_restart_or_lost_socket(self):
+        service=Services()
+        waiting={'healthy':False,'MainPID':100,'state':'not listening','ActiveState':'active','SubState':'running',
+                 'Result':'success','ExecMainStatus':0,'NRestarts':0,'listening':False}
+        healthy={**waiting,'healthy':True,'listening':True,'state':'healthy'}
+        cases=[([waiting]*3+[healthy]*8,False,11),([waiting]*9,True,9),
+               ([{**waiting,'NRestarts':1}],True,1),([healthy,{**healthy,'MainPID':200}],True,2),
+               ([healthy,waiting],True,2)]
+        for states,fails,count in cases:
+            with self.subTest(count=count,fails=fails),patch.object(service,'assert_owned'), \
+                 patch('nodepilot_pkg.services.run'),patch('nodepilot_pkg.services.time.sleep'), \
+                 patch.object(service,'runtime',side_effect=states) as runtime:
+                if fails:
+                    with self.assertRaises(PilotError):service.restart(fixture())
+                else:service.restart(fixture())
+                self.assertEqual(runtime.call_count,count)
+
     def test_runtime_differentiates_exit_restarts_and_missing_listener(self):
         n=fixture(); s=Services()
         base='ActiveState=active\nSubState=running\nResult=success\nMainPID=100\nExecMainStatus=0\nNRestarts=0'

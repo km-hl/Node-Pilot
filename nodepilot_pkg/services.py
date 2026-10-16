@@ -33,12 +33,11 @@ class Services:
             raise PilotError(f"拒绝操作非本项目或被外部修改的服务：{n['service']}")
         if not path.exists() and not missing:
             raise PilotError("本项目服务单元缺失，拒绝停止同名系统服务。")
+        loaded = run(["systemctl", "show", n["service"], "-p", "FragmentPath", "--value"])
+        if path.exists() and loaded and loaded!=str(path):
+            raise PilotError('已加载的同名服务来自其他位置，拒绝改写/停止。')
         if not path.exists():
             # Also reject vendor/generated units with the same name.
-            try:
-                loaded = run(["systemctl", "show", n["service"], "-p", "FragmentPath", "--value"])
-            except PilotError:
-                loaded = ""
             if loaded:
                 raise PilotError("同名服务已由其他位置提供。")
         else:
@@ -91,13 +90,24 @@ class Services:
         run(["systemctl", "reset-failed", n["service"]])
         run(["systemctl", "restart", n["service"]])
         # Do not mistake immediate 'active' before the core exits for a healthy restart.
-        pid = None
-        for _ in range(8):
+        pid, stable = None, 0
+        for attempt in range(16):
             time.sleep(0.5)
             state = self.runtime(n)
+            # Type=simple becomes active before a slow core binds. Permit only
+            # the initial clean active/running state a bounded readiness grace;
+            # never excuse an exit/restart, PID change, or a later lost listener.
+            if (pid is None and attempt<8 and not state['healthy'] and
+                    state.get('ActiveState')=='active' and state.get('SubState')=='running' and
+                    state.get('Result') in {'','success'} and state.get('ExecMainStatus')==0 and
+                    state.get('NRestarts')==0 and state.get('MainPID',0)>1 and not state.get('listening')):
+                continue
             if not state['healthy'] or (pid is not None and pid != state['MainPID']):
                 raise PilotError(f"{n['service']}：{state['state']}；ActiveState={state.get('ActiveState')} Result={state.get('Result')} exit={state['ExecMainStatus']} restarts={state['NRestarts']}；检查本机 journalctl。")
             pid = state['MainPID']
+            stable+=1
+            if stable==8:return
+        raise PilotError('服务未在有界等待内达到稳定监听状态。')
 
     def remove(self, n):
         path = self.assert_owned(n)

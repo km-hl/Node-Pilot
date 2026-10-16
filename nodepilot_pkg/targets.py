@@ -1,5 +1,6 @@
 """VPS-local, bounded Reality target screening. No ping ranking or fixed winner."""
 import ipaddress
+import errno
 import json
 import socket
 import ssl
@@ -85,6 +86,7 @@ def exclude_cf(ips, canonical, networks):
 
 
 def cf_headers(headers):
+    headers = {k.lower():v for k,v in headers.items()}
     return "cf-ray" in headers or "cf-cache-status" in headers or "cloudflare" in headers.get("server", "").lower()
 
 
@@ -109,11 +111,16 @@ def http_headers(ip, port, sni, timeout=3):
             if b"\r\n\r\n" not in data or len(data) > 16384:
                 raise PilotError("排除：无法取得有界 HTTP 响应头。")
             lines = bytes(data).split(b"\r\n\r\n", 1)[0].decode("iso-8859-1").split("\r\n")
-            try:
-                status = int(lines[0].split()[1])
-            except (ValueError, IndexError) as e:
-                raise PilotError("排除：HTTP 响应无效。") from e
-            headers = {k.strip().lower(): v.strip() for line in lines[1:] if ":" in line for k, v in [line.split(":", 1)]}
+            if not re.fullmatch(r'HTTP/1\.[01] [2-5][0-9]{2}(?: [^\r\n]*)?',lines[0]):
+                raise PilotError("HTTP 最终响应状态无效或未完成。")
+            status = int(lines[0].split()[1])
+            headers = {}
+            for line in lines[1:]:
+                name, sep, value = line.partition(':')
+                if not sep or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+",name) or any(ord(c)<32 and c!='\t' for c in value):
+                    raise PilotError('HTTP 响应头格式无效；CF 特征未验证。')
+                name=name.lower()
+                headers[name]=headers.get(name,'')+','+value.strip()
             return status, headers
 
 
@@ -121,6 +128,20 @@ class TargetFailure(PilotError):
     def __init__(self, code, message):
         self.code = code
         super().__init__(message)
+
+
+def http_failure(error):
+    if isinstance(error,ssl.SSLCertVerificationError):
+        return 'certificate','HTTP 检查的证书链/SNI 验证失败'
+    if isinstance(error,(TimeoutError,socket.timeout)):
+        return 'timeout','HTTP 检查超时'
+    if isinstance(error,ConnectionRefusedError):
+        return 'connection_refused','HTTP 检查连接被拒绝'
+    if isinstance(error,OSError) and error.errno in {errno.ENETUNREACH,errno.EHOSTUNREACH,errno.EAFNOSUPPORT}:
+        return 'network_unreachable','HTTP 检查的地址/地址族不可达'
+    if isinstance(error,ssl.SSLError):
+        return 'tls','HTTP 检查 TLS 失败（独立于 h2 握手结果）'
+    return 'http_unverified','HTTP 响应头未验证'
 
 
 def run_openssl(args, timeout):
@@ -166,7 +187,9 @@ def tls_handshake(ip, port, sni, timeout=4):
     if result.returncode:
         if re.search(r'Network is unreachable|No route to host',output,re.I):
             raise TargetFailure('network_unreachable','此地址/地址族无可用路由')
-        if re.search(r'Connection refused|connect:errno',output,re.I):
+        if re.search(r'Connection refused',output,re.I):
+            raise TargetFailure('connection_refused','目标 TCP 连接被拒绝')
+        if re.search(r'connect:errno',output,re.I):
             raise TargetFailure('connection','目标 TCP 连接失败')
         code = "certificate" if re.search(r"verify error|certificate verify|hostname mismatch", output, re.I) else "handshake"
         raise TargetFailure(code, "证书链/SNI 验证失败" if code == "certificate" else "TCP/TLS 握手失败（要求 TLS 1.3 与 X25519）")
@@ -212,22 +235,28 @@ def inspect_target(target, sni, networks):
                 sample = tls_handshake(ip, port, sni)
                 samples.append(sample["elapsed_ms"])
             warnings, status = [], None
+            http_check={'status':'unknown'}
             try:
                 status, headers = http_headers(ip, port, sni)
                 if cf_headers(headers):
                     raise TargetFailure("cloudflare", "排除：HTTP 响应含 Cloudflare CDN 标记")
+                http_check={'status':'passed','http_status':status,
+                            'response':'redirect' if 300<=status<400 else 'success' if 200<=status<300 else 'http_error'}
                 if 300 <= status < 400 or "location" in headers:
                     warnings.append("根页面有跳转（未跟随），不影响已验证的 TLS 条件")
                 elif not 200 <= status < 300:
                     warnings.append(f"根页面 HTTP {status}，网页质量需人工评估")
             except TargetFailure:
                 raise
-            except (PilotError, OSError, ssl.SSLError):
-                warnings.append("HTTP/1.1 网页检查未成功；TLS/h2 已验证，CF 响应头未验证")
+            except (PilotError, OSError) as error:
+                code,reason=http_failure(error)
+                http_check.update(code=code,reason=reason)
+                warnings.append(reason+'；TLS/h2 已验证，CF 响应头未知，不用于自动选站')
             results.append({"ip": ip, "family": ipaddress.ip_address(ip).version,
                             "median_ms": round(statistics.median(samples), 2),
                             "spread_ms": round(max(samples) - min(samples), 2), "samples": 3,
-                            "group": sample["group"], "http_status": status, "warnings": warnings})
+                            "group": sample["group"], "http_status": status, "warnings": warnings,
+                            "http_check":http_check})
         except (PilotError, OSError) as error:
             if getattr(error, "code", "") == "cloudflare":
                 raise
@@ -235,14 +264,20 @@ def inspect_target(target, sni, networks):
             continue
     if not results:
         raise PilotError("目标全部已测地址失败/未验证：" + "; ".join(f"{f['ip']} {f['code']} {f['reason']}" for f in failures))
-    best = min(results, key=lambda x: (x["median_ms"], x["spread_ms"]))
+    screened=[r for r in results if r['http_check']['status']=='passed']
+    best = min(screened or results, key=lambda x: (x["median_ms"], x["spread_ms"]))
     pinned = f"[{best['ip']}]:{port}" if best["family"] == 6 else f"{best['ip']}:{port}"
     return {"target": pinned, "requested_target": target, "sni": sni, "median_ms": best["median_ms"], "spread_ms": best["spread_ms"],
             "feasible": True, "tls": "TLSv1.3", "alpn": "h2", "group": best["group"],
             "certificate_verified": True, "addresses": results, "failures": failures,
             "untested_addresses": [ip for ip in ips if ip not in tested], "warnings": best["warnings"],
-            "checked_at": datetime.now(timezone.utc).isoformat(), "cf_screened": True,
-            "note": "VPS 至目标三次 OpenSSL TCP+TLS（含子进程开销）中位时延；不是长期或客户端联通证明。"}
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "cf_screened": bool(networks) and best['http_check']['status']=='passed',
+            "checks":{'ip_ranges':{'status':'passed' if networks else 'unknown','addresses':ips},
+                      'dns_cname':{'status':'passed','scope':'系统 A/AAAA 与可见规范名称；非完整 CNAME 链审计'},
+                      'http_headers':best['http_check'],
+                      'tls':{'status':'passed','tls':'TLSv1.3','group':'X25519','alpn':'h2','certificate_verified':True}},
+            "note": "CF 筛查仅覆盖当前官方网段、系统可见 DNS 规范名和所选 IP 响应头，不能证明完全不使用 CF。VPS 至目标三次 OpenSSL TCP+TLS 中位时延，不是长期或客户端联通证明。"}
 
 
 def rank_targets(domains=None, report=None):
@@ -254,8 +289,10 @@ def rank_targets(domains=None, report=None):
         host(domain, public=True)
         try:
             result = inspect_target(domain + ":443", domain, networks)
+            if result.get('cf_screened') is not True:
+                raise PilotError('CF 筛查未完成，自动选站排除；'+'；'.join(result.get('warnings',[])))
             ranked.append(result)
-            message = f"{domain}：TLS1.3/h2/X25519/证书通过；{result['median_ms']} ms，波动 {result['spread_ms']} ms"
+            message = f"{domain}：TLS1.3/h2/X25519/证书通过；当前网段/DNS 规范名/所选 IP 响应头未见 CF 特征；{result['median_ms']} ms，波动 {result['spread_ms']} ms"
             message += "；" + "；".join(result.get("warnings", [])) if result.get("warnings") else ""
             for failure in result.get("failures", []):
                 message += f"\n  {failure['ip']}：{failure['code']} {failure['reason']}"
@@ -270,7 +307,7 @@ def target_identity(node):
     import hashlib
     import json
     return hashlib.sha256(json.dumps([node['sni'], node['reality']['target'],
-                                     node['reality']['server_names']],sort_keys=True).encode()).hexdigest()
+                                     node['reality']['server_names'],node['reality'].get('selection',{})],sort_keys=True).encode()).hexdigest()
 
 
 def recheck_target(state, node):
@@ -278,25 +315,44 @@ def recheck_target(state, node):
     from .common import atomic_json, private_dir
     if node['protocol']!='reality' or node['reality'].get('mode')=='self':
         raise PilotError('此操作只适用于第三方 Reality 目标；自建目标请查看 Caddy 证书/服务。')
-    fixed, _ = split_target(node['reality']['target'])
+    fixed, fixed_port = split_target(node['reality']['target'])
     record = {'identity':target_identity(node), 'checked_at':datetime.now(timezone.utc).isoformat(),
               'status':'检测失败，需要手动重选', 'dns':[], 'dns_drift':None, 'target':node['reality']['target']}
+    record.update(sni=node['sni'],dns_status='未知：缺少匹配的原始选站记录')
+    selection=node['reality'].get('selection',{})
     try:
-        addresses, _ = resolve(node['sni'])
-        record.update(dns=addresses, dns_drift=fixed not in addresses)
+        if not isinstance(selection,dict) or selection.get('target')!=node['reality']['target'] or selection.get('sni')!=node['sni'] or not selection.get('requested_target'):
+            raise PilotError('无原始目标证据')
+        original, original_port = split_target(selection['requested_target'])
+        if original_port!=fixed_port:raise PilotError('原始选站端口与当前目标不符')
+        original=host(original,public=True)
+        record['requested_target']=selection['requested_target']
+        if is_ip(original):
+            record['dns_status']='不适用：原始目标是 IP，不以 SNI 的 DNS 判断漂移'
+        elif is_ip(fixed):
+            addresses, _ = resolve(original)
+            record.update(dns=addresses,dns_drift=ipaddress.ip_address(fixed) not in {ipaddress.ip_address(a) for a in addresses},
+                          dns_status='已检查原始目标域名 '+original)
+        else:
+            record['dns_status']='未知：当前目标未固定 IP'
     except (PilotError, OSError):
-        record['dns_error']='当前 DNS 未验证'
+        record['dns_error']='原始目标 DNS 未验证或原始选站记录缺失；漂移未知'
+        record['dns_status']='未知：原始目标 DNS 或选站证据未验证'
     try:
         # inspect_target probes precisely this fixed IP, rather than a new DNS IP.
         if not is_ip(fixed):
             raise PilotError('旧目标尚未固定 IP；请在菜单 5 手动重新检测并选择目标。')
+        networks=cloudflare_networks()
+        checks=[]
         for sni in node['reality']['server_names']:
-            check = inspect_target(node['reality']['target'],sni,cloudflare_networks())
-        record.update(status='最近检测通过：TLS1.3 / X25519 / h2 / 可信证书', result=check)
+            checks.append(inspect_target(node['reality']['target'],sni,networks))
+        record.update(status='最近检测通过：TLS1.3 / X25519 / h2 / 可信证书',result=checks[-1],results=checks)
+        record['status']+='；CF 当前范围筛查完成' if all(c.get('cf_screened') is True for c in checks) else '；CF 筛查未知/未完成'
     except (PilotError, OSError) as error:
         record['diagnostic']=str(error)
     if record['dns_drift']:
         record['status'] += '；固定 IP 与当前 DNS 存在差异，请评估手动重选'
+    record['status']+='；'+record['dns_status']
     atomic_json(private_dir(Path(state)/'target-status')/(node['id']+'.json'),record)
     return record
 
@@ -309,6 +365,8 @@ def target_status(state, node):
         if record.get('identity')==target_identity(node):
             return record['status']+'；检测时间 '+record['checked_at']
     selection = node['reality'].get('selection',{})
+    if not isinstance(selection,dict):selection={}
     if selection.get('target') == node['reality']['target']:
-        return '选站时检测通过；时间 '+selection.get('checked_at','未知')+'；菜单 8 → 5 可手动复查固定 IP/DNS'
+        scope='CF 分项范围有记录' if selection.get('checks') else '旧 CF 检测范围未知，建议复查'
+        return '选站历史；'+scope+'；时间 '+selection.get('checked_at','未知')+'；菜单 8 → 5 可手动复查固定 IP/DNS'
     return '尚未检测当前固定目标；菜单 8 → 5 可检查并评估手动重选'

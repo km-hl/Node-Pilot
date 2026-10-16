@@ -2,6 +2,7 @@
 import base64
 import copy
 import json
+import hashlib
 import os
 import secrets
 import shutil
@@ -468,63 +469,119 @@ class Manager:
 
     def recover_core(self):
         pending = self.state / "core-pending.json"
+        if pending.is_symlink():raise PilotError('内核事务为外部链接，保留证据。')
         if pending.exists():
+            # A legal 256KiB Caddy snapshot expands to ~342KiB in base64 JSON.
+            if not pending.is_file() or pending.stat().st_size>512*1024:
+                raise PilotError('内核事务不是有界普通文件。')
             record = read_json(pending)
-            if record.get('schema',1) not in {1,2}:
+            if not isinstance(record,dict) or type(record.get('schema',1)) is not int or record.get('schema',1) not in {1,2}:
                 raise PilotError('内核事务 schema 不受支持。')
-            core = record["core"]
-            if core not in {"xray", "sing-box", "caddy"}:
+            core = record.get("core")
+            if not isinstance(core,str) or core not in {"xray", "sing-box", "caddy"} or 'old' not in record:
                 raise PilotError("非法内核恢复记录。")
+            affected=[n for n in self.nodes() if n['core']==core or (core=='caddy' and own_target(n))]
+            for n in affected:self.services.assert_owned(n)
+            if core=='caddy' and affected:self.caddy.assert_owned()
+            caddy_previous=None
+            if core=='caddy' and record.get('caddy_previous') is not None:
+                try:
+                    caddy_previous=base64.b64decode(record['caddy_previous'],validate=True)
+                    if len(caddy_previous)>256*1024 or not isinstance(json.loads(caddy_previous),dict):raise ValueError()
+                except (ValueError,TypeError):
+                    raise PilotError('Caddy 原配置证据损坏；未切换内核，保留事务。') from None
             if record["old"]:
+                if not isinstance(record['old'],str):raise PilotError('内核恢复路径无效。')
                 old = Path(record["old"])
-                if old.resolve().parent != (self.cores.root / core).resolve():
+                if not old.is_absolute() or old.is_symlink() or not old.is_dir() or old.resolve().parent != (self.cores.root / core).resolve() or old.name=='current':
                     raise PilotError("内核恢复路径越界。")
                 self.cores.switch(core, old)
                 if core == "caddy":
-                    if record.get('caddy_previous') is not None:
-                        self.caddy.restore_configuration(base64.b64decode(record['caddy_previous'],validate=True))
+                    if caddy_previous is not None:
+                        self.caddy.restore_configuration(caddy_previous)
                     else:
                         self.caddy.sync(self.nodes(), restart=True)
-                for n in self.nodes():
-                    if n["core"] == core or (core=='caddy' and own_target(n)):
-                        self.services.restart(n)
+                for n in affected:self.services.restart(n)
             else:
+                if record['old'] is not None or affected:
+                    raise PilotError('无旧内核的恢复记录与现有节点冲突，保留事务。')
                 (self.cores.root / core / "current").unlink(missing_ok=True)
             pending.unlink()
 
-    def restore(self, backup):
-        # Portable backups restore only into an empty node set, with rollback on failure.
+    @contextmanager
+    def restore_plan(self, backup, expected_digest=None):
+        """Validate the WHOLE portable bundle before publishing any node/service."""
         if self.nodes():
             raise PilotError("恢复只允许空节点目录，防止覆盖现有节点；请先备份并删除节点。")
+        self.assert_transactions_idle(Path('/opt/nodepilot'))
         path = Path(backup)
-        if path.stat().st_size > 8 * 1024 * 1024:
-            raise PilotError("备份文件过大。")
-        bundle = read_json(path)
-        if bundle.get("schema") != 1 or len(bundle.get("nodes", [])) > 100:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 8*1024*1024:
+            raise PilotError("备份必须为不超过 8MiB 的普通文件，不能是链接。")
+        raw=path.read_bytes()
+        if len(raw)>8*1024*1024:raise PilotError('备份文件过大。')
+        digest=hashlib.sha256(raw).hexdigest()
+        if expected_digest is not None and digest!=expected_digest:
+            raise PilotError('备份在预览后已改变；请重新预览确认，未修改服务。')
+        try:bundle=json.loads(raw)
+        except (ValueError,UnicodeError):raise PilotError('备份 JSON 损坏。') from None
+        if not isinstance(bundle,dict) or type(bundle.get('schema')) is not int or bundle['schema']!=1 or not isinstance(bundle.get('nodes'),list) or len(bundle['nodes'])>100:
             raise PilotError("备份格式无效。")
         import tempfile
+        nodes,summaries=[],[]
+        with tempfile.TemporaryDirectory(prefix='restore-',dir=self.state) as tmp:
+            for entry in bundle['nodes']:
+                try:
+                    if not isinstance(entry,dict) or not isinstance(entry.get('node'),dict) or not isinstance(entry.get('files'),dict):
+                        raise PilotError('备份节点/文件格式无效。')
+                    n=copy.deepcopy(entry['node']);validate(n)
+                    if 'adoption' in n:
+                        raise PilotError('便携备份含接管节点；不能恢复外部服务控制权或引用不存在的接管记录。请在原机核对接管记录，或重新显式导入。')
+                    if any(o['id']==n['id'] for o in nodes) or self.node_dir(n['id']).exists():
+                        raise PilotError('备份 ID 重复或存在未完成节点目录。')
+                    directory=private_dir(Path(tmp)/n['id'])
+                    original='无本地证书'
+                    if n['protocol']!='reality' or own_target(n):
+                        original=certificates.restore_import(n,entry['files'],directory)
+                    elif entry['files']:
+                        raise PilotError('第三方 Reality 备份不应包含本地证书文件。')
+                    validate(n)
+                    from .dns_credentials import profiles
+                    if profiles(n):raise PilotError('恢复节点仍含 DNS 凭据引用，拒绝恢复。')
+                    for other in nodes:
+                        if conflicts(n,other):raise PilotError('备份内部存在监听端口冲突。')
+                    self.services.assert_owned(n,missing=True)
+                    port_free(n['listen'],n['port'],n['transport'])
+                    if own_target(n):self.caddy.preflight(n,None,nodes)
+                    elif any(own_target(o) and n['transport']=='tcp' and n['port']==o['caddy']['port'] for o in nodes):
+                        raise PilotError('备份节点与 Caddy 目标端口冲突。')
+                    atomic_json(directory/'config.json',generate(n))
+                    self.cores.check(n,directory/'config.json')
+                    nodes.append(n)
+                    summaries.append({'id':n['id'],'name':n['name'],'protocol':n['protocol'],
+                        'certificate_mode':original,'restored_mode':'import' if original!='无本地证书' else original,
+                        'notice':certificates.renewal_notice(n)})
+                except (KeyError,TypeError,ValueError,AttributeError) as error:
+                    raise PilotError('备份节点元数据损坏或不兼容；未修改服务。') from error
+            if any(own_target(n) for n in nodes):self.caddy.check(nodes)
+            yield {'sha256':digest,'nodes':summaries},nodes
+
+    def preview_restore(self,backup):
+        with self.restore_plan(backup) as (summary,nodes):return summary
+
+    def restore(self, backup, expected_digest=None):
+        # Per-node durable rollback is reused; never take over external services.
         restored = []
-        try:
-            with tempfile.TemporaryDirectory(prefix="restore-", dir=self.state) as tmp:
-                for entry in bundle["nodes"]:
-                    n = validate(entry["node"])
-                    if n["protocol"] != "reality" or own_target(n):
-                        for name in ("certificate.pem", "key.pem"):
-                            data = base64.b64decode(entry["files"][name], validate=True)
-                            if len(data) > 256 * 1024:
-                                raise PilotError("证书备份过大。")
-                            atomic_bytes(Path(tmp) / name, data)
-                        if own_target(n):
-                            n["caddy"].update(certificate_mode="import", certificate=str(Path(tmp) / "certificate.pem"), key=str(Path(tmp) / "key.pem"))
-                            n['caddy'].pop('dns',None)
-                        else:
-                            n["tls"].update(mode="import", certificate=str(Path(tmp) / "certificate.pem"), key=str(Path(tmp) / "key.pem"))
-                            n['tls'].pop('dns',None)
-                            n['tls'].pop('challenge',None)
+        with self.restore_plan(backup,expected_digest) as (summary,nodes):
+            try:
+                for n in nodes:
                     saved = self.apply(n)
                     restored.append(saved["id"])
-        except (Exception, KeyboardInterrupt):
-            for node_id in reversed(restored):
-                self.delete(node_id)
-            raise
+            except (Exception, KeyboardInterrupt) as error:
+                failures=[]
+                for node_id in reversed(restored):
+                    try:self.delete(node_id)
+                    except (Exception,KeyboardInterrupt):failures.append(node_id)
+                if failures:
+                    raise PilotError('备份恢复失败，部分已恢复节点清理未完成：'+','.join(failures)+'；保留节点/事务，请核对恢复。') from error
+                raise
         return restored

@@ -69,3 +69,17 @@ class RealityMenuTests(unittest.TestCase):
         validate(n)
         screen.assert_called_once_with("origin.example.com:10443", "manual.example.com", [])
         self.assertEqual(n["reality"]["target"], "origin.example.com:10443")
+
+    def test_restore_preview_precedes_confirmation_and_digest_is_forwarded(self):
+        menu=self.menu('');menu.ask=MagicMock(side_effect=['2','/trusted/backup.json'])
+        summary={'sha256':'a'*64,'nodes':[{'id':'n-1','name':'test','protocol':'anytls','certificate_mode':'acme',
+                 'restored_mode':'import','notice':'自动续期已关闭，需要重新配置'}]}
+        menu.manager.preview_restore.return_value=summary
+        menu.manager.restore.return_value=['n-1']
+        def confirm(text):
+            shown=' '.join(str(c.args[0]) for c in menu.say.call_args_list)
+            self.assertIn('将恢复 1 个节点',shown);self.assertIn('anytls',shown)
+            self.assertIn('acme → import',shown);self.assertIn('自动续期已关闭',shown)
+            return True
+        menu.confirm=confirm;menu.backup_restore()
+        menu.manager.restore.assert_called_once_with('/trusted/backup.json',expected_digest='a'*64)

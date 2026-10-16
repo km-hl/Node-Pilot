@@ -21,8 +21,8 @@ v0.2.0 默认参考 [Reality 偷自己 / Caddy 管理证书教程](https://jolly
 
 - 内置 Amazon/AWS、Samsung、Nvidia、AMD、Intel、Sony、Oracle 仅是候选；去除 Apple/Google 是推荐策略，不是协议无效判定。也可输入任意合规的 1–12 个自选候选。
 - 从 [Cloudflare 官方公开 API](https://developers.cloudflare.com/api/resources/ips/methods/list/) 获取当前 IPv4/IPv6 网段，失败时尝试官方文本列表。全部来源失败则停止选站，避免将未知结果当作非 CF。
-- DNS 查询有独立进程超时，拒绝非公网地址；任意 DNS 地址落在 CF IP 段、规范名称有 CF 标记即排除。仅使用 Cloudflare 权威 DNS 不等于使用其 CDN，不按 NS 一刀切排除。
-- OpenSSL s_client 保留可信链和主机名验证，显式要求 TLS1.3/h2 并提供 X25519，再读取实际协商组；没有可靠组结果标为未验证。每地址三次测量，取中位数和极差，测量包含子进程开销。HTTP 请求固定在筛选 IP，不跟随跳转；CF 响应标记仍排除，HTTP 不可用会显示未验证质量项。
+- DNS 查询有独立进程超时，拒绝非公网地址；任意 DNS 地址落在 CF IP 段、规范名称有 CF 标记即排除。使用系统 getaddrinfo 的 A/AAAA 和可见规范名，不宣称审计了完整 CNAME 链（[Python 官方语义](https://docs.python.org/3/library/socket.html#socket.getaddrinfo)）。仅使用 Cloudflare 权威 DNS 不等于使用其 CDN，不按 NS 一刀切排除。
+- OpenSSL s_client 保留可信链和主机名验证，显式要求 TLS1.3/h2 并提供 X25519，再读取实际协商组；没有可靠组结果标为未验证。每地址三次测量，取中位数和极差，测量包含子进程开销。HTTP 请求固定在筛选 IP，不跟随跳转；任何已测地址有 CF 头标记即排除整个候选。200/301/302/403/404 等有效最终响应头可以检查 CF；HTTP 质量与 TLS 可行性分开。头部超时、拒绝连接、不可达、证书错误、无效/未完成响应各自记录原因，不标完成。自动排名只收录网段/可见 DNS/所选地址头检查均完成的候选，优先已完成检查的 IP。
 - 最多测试每族三个地址，交错检测 IPv4/IPv6，一个失败继续其他地址；超过上限明确未测。自动选择固定到已验证的 IP，避免内核重新解析时拨到失败地址；手动 target 保留用户输入。DNS/CDN 地址会变化，只声称排除了当前检测到的 CF，不能保证未来地址。旧节点升级和目标未变的编辑不强制重选。
 - 名单测量来自 VPS 到目标，不能用开发者电脑的 ping 代替。低握手时延不代表高吞吐，也不能证明 Reality 真正握手成功；必须从真实客户端再验证。
 
@@ -36,5 +36,9 @@ nodepilot targets --domains www.amazon.com,aws.amazon.com,www.samsung.com
 已有节点修改可输入 `keep` 保留原第三方目标；目标/SNI 未变时不重新筛选，变更摘要须确认。自建转第三方输入 `-`；反向切换填写自己的域名。证书失败不静默改用第三方 SNI。
 
 输入 `manual` 可指定 target 域名/IP、端口及客户端 SNI，执行当前 CF、可信证书、TLS1.3/h2/X25519 与三次检测，网页质量单独提示。选择域名 target 时，内核可能重新解析到其他地址；用户需根据分地址结果评估。
+
+结果中的 `checks` 分开记录 `ip_ranges`、`dns_cname`、`http_headers` 和 `tls`；`feasible` 表示 TLS 适配，`cf_screened` 表示所声明范围的 CF 检查完成，均不保证完全非 CF 或未来可用。未完成 HTTP 检查的手动结果保留可读原因，不声称全部通过。旧 selection 记录仍可读取，旧的单一布尔值不能证明分项范围，界面提示建议复查。
+
+菜单 8 → 5 对当前固定 IP 复查，target、SNI 和原始目标域名分开处理：只有与当前目标/SNI 匹配的 selection.requested_target 域名才用于 DNS 漂移；任一 A/AAAA 仍匹配固定 IP 就不报漂移，IPv6 使用规范地址值比较。原始 IP 不适用 DNS 漂移；缺记录、未固定、记录失配或 DNS 失败显示未知，不以 SNI 推测，也不自动换 IP。网络复查只写独立诊断记录，不改节点或重启服务。
 
 菜单 8 的本机 Reality 客户端检测使用临时已校验 Xray、正常 HTTPS 验证并读取返回数据，避免把原生配置检查当作连接成功。它没有经过外部防火墙/云安全组，结果始终说明公网未验证。认证失败与目标握手失败在部分内核日志中无法可靠区分，按组合/未知原因报告，不猜测通过。
