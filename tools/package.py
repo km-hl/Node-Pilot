@@ -25,9 +25,9 @@ def package(archive):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--archive", type=Path, default=ROOT / "dist/nodepilot-0.3.0.tar.gz")
+    p.add_argument("--archive", type=Path, default=ROOT / "dist/nodepilot-0.4.0.tar.gz")
     p.add_argument("--repo", help="发布仓库 owner/repo；只生成产物，不上传")
-    p.add_argument("--tag", default="v0.3.0")
+    p.add_argument("--tag", default="v0.4.0")
     args = p.parse_args()
     if args.repo and (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) or not re.fullmatch(r"v\d+\.\d+\.\d+", args.tag)):
         p.error("仓库/tag 格式错误")

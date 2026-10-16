@@ -10,7 +10,9 @@ class PilotError(Exception):
     pass
 
 
-def run(args, timeout=30, input=None):
+def run(args, timeout=30, input=None, graceful_interrupt=False):
+    if graceful_interrupt:
+        return run_with_cleanup(args,timeout)
     try:
         p = subprocess.run([str(a) for a in args], input=input, text=True,
                            capture_output=True, timeout=timeout, check=False)
@@ -20,6 +22,30 @@ def run(args, timeout=30, input=None):
         # Core error messages may contain configuration credentials: do not echo.
         raise PilotError(f"{args[0]} 返回 {p.returncode}；请在本机检查配置/服务日志（可能含凭据）。")
     return p.stdout.strip()
+
+
+def run_with_cleanup(args, timeout):
+    """Give the DNS plugin time to remove its TXT before escalating a timeout.
+
+    Provider outage/SIGKILL/power loss can still leave TXT: never promise cleanup.
+    Output is suppressed; acme_runner redacts private Certbot file logs as well.
+    """
+    import signal
+    process = subprocess.Popen([str(a) for a in args],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    try:
+        code=process.wait(timeout=timeout)
+    except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
+        process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.kill();process.wait(timeout=5)
+        if isinstance(error,KeyboardInterrupt):
+            raise
+        raise PilotError('DNS 挑战超时，已请求插件清理 TXT；请检查 Cloudflare _acme-challenge 残留及私有日志后重试。') from None
+    if code:
+        raise PilotError('DNS-01 签发失败；检查 Token 的 Zone 权限、传播等待和脱敏私有日志。API 故障或强制中断后需核对挑战 TXT 清理。')
+    return ''
 
 
 def run_bytes(args, data, timeout=15):

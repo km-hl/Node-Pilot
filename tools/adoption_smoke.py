@@ -21,7 +21,7 @@ from nodepilot_pkg.common import PilotError, atomic_bytes, atomic_json, private_
 from nodepilot_pkg.config import generate
 from nodepilot_pkg.cores import Cores, verify_elf
 from nodepilot_pkg.manager import Manager, OWNER
-from nodepilot_pkg.model import host, new_node
+from nodepilot_pkg.model import new_node
 from nodepilot_pkg.services import Services
 from nodepilot_pkg.share import share
 from nodepilot_pkg.system import architecture
@@ -53,6 +53,8 @@ def snapshot_sources(m, sources):
 
 
 def setup():
+    from tools.caddy_smoke import ssh_address
+    address = ssh_address()
     state = Path("/var/lib") / ("nodepilot-adoption-test-" + secrets.token_hex(6))
     m = manager_at(state)
     m.initialize()
@@ -69,7 +71,6 @@ def setup():
         copy = private_dir(state / "original-binaries" / core) / core
         shutil.copy2(source, copy)
         assert digest(source) == digest(copy)
-    address = host(os.environ["SSH_CONNECTION"].split()[2], public=True)
     private, public = m.cores.keypair()
     nodes = []
     for protocol in ("reality", "anytls", "hysteria2"):

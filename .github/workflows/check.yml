@@ -11,12 +11,19 @@ jobs:
         run: python3 tools/privacy_audit.py
       - name: Unit and transaction tests
         run: python3 -m unittest discover -s tests -v
+      - name: Real loopback Reality target TLS and HTTP screening
+        run: python3 tools/target_smoke.py --local
       - name: Bash syntax and shellcheck
         run: |
           bash -n install.sh
           shellcheck install.sh
+          python3 nodepilot self-check
       - name: Official verified core checks
         run: python3 tools/native_check.py --download
+      - name: Official Mihomo export parser
+        run: python3 tools/mihomo_check.py --download
+      - name: Real Caddy local IPv4 and IPv6 listeners
+        run: python3 tools/http_family_smoke.py
       - name: Reproducible packaging
         run: |
           python3 tools/package.py --archive /tmp/nodepilot-a.tar.gz

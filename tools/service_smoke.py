@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from nodepilot_pkg.common import PilotError, root_required, run
+from nodepilot_pkg.common import PilotError, atomic_json, root_required, run
 from nodepilot_pkg.cores import Cores
 from nodepilot_pkg.manager import Manager
 from nodepilot_pkg.model import new_node
@@ -98,6 +98,31 @@ def main():
             assert services.active(manager.get(created[0]["id"]))
             assert services.active(manager.get(created[2]["id"]))
             print("single-node deletion isolation OK")
+        # Binding must leave real running node PIDs, configs and links intact.
+        from nodepilot_pkg.manager import OWNER
+        from nodepilot_pkg.project_update import bind_repository
+        from nodepilot_pkg.share import share
+        program=state/'program';program.mkdir();(program/'.owner').write_text(OWNER)
+        atomic_json(program/'source.json',{'schema':1,'provenance':'local-source'})
+        def snapshot():
+            return {n['id']:(run(['systemctl','show',n['service'],'-p','MainPID','--value']),
+                (manager.revision(n['id'])/'config.json').read_bytes(),share(n)) for n in manager.nodes()}
+        before=snapshot();source_before=(program/'source.json').read_bytes()
+        record={'tag_name':'v0.4.0','assets':[{'name':name,'digest':'sha256:'+'a'*64,
+            'browser_download_url':'https://github.com/example/project/releases/download/v0.4.0/'+name}
+            for name in ('install.sh','nodepilot-0.4.0.tar.gz')]}
+        pending=state/'core-pending.json';atomic_json(pending,{'schema':2})
+        with patch('nodepilot_pkg.project_update.official_release',return_value=record) as network:
+            try:bind_repository('example/project',True,program,manager)
+            except PilotError:pass
+            else:raise AssertionError('active transaction was not refused')
+            network.assert_not_called()
+            assert snapshot()==before and (program/'source.json').read_bytes()==source_before
+            pending.unlink()  # Test-created inert fixture, never a real core upgrade.
+            bind_repository('example/project',True,program,manager)
+        assert snapshot()==before
+        assert all(services.runtime(n)['healthy'] for n in manager.nodes())
+        print('bind-source refusal/success preserves real node PIDs/configs/URIs/listeners OK (Release API fixture)')
     finally:
         if state.exists():
             with manager.locked():

@@ -15,12 +15,13 @@ from nodepilot_pkg.installation import uninstall
 from nodepilot_pkg.manager import Manager
 
 
-def tty_command(command, replies=("0",), timeout=120):
+def tty_command(command, replies=("0",), timeout=120, cwd=ROOT, expect_code=0, source_replies=()):
     pid, fd = pty.fork()
     if pid == 0:
-        os.chdir(ROOT)
+        os.chdir(cwd)
         os.execvp(command[0], command)
     received, sent, completed = bytearray(), 0, False
+    source_sent=0
     start = time.monotonic()
     try:
         while time.monotonic() - start < timeout:
@@ -33,6 +34,9 @@ def tty_command(command, replies=("0",), timeout=120):
                 if not chunk:
                     break
                 received.extend(chunk)
+                source_count=bytes(received).count('确认变更安装来源'.encode())
+                if source_count>source_sent and source_sent<len(source_replies):
+                    os.write(fd,(source_replies[source_sent]+'\n').encode());source_sent+=1
                 prompt_count = bytes(received).count("请输入选项".encode())
                 if prompt_count > sent and sent < len(replies):
                     os.write(fd, (replies[sent] + "\n").encode())
@@ -40,7 +44,7 @@ def tty_command(command, replies=("0",), timeout=120):
             result, status = os.waitpid(pid, os.WNOHANG)
             if result:
                 completed = True
-                if os.waitstatus_to_exitcode(status) != 0:
+                if os.waitstatus_to_exitcode(status) != expect_code:
                     raise AssertionError(received.decode(errors="replace"))
                 break
         if not completed:
@@ -48,7 +52,7 @@ def tty_command(command, replies=("0",), timeout=120):
                 raise AssertionError("安装菜单测试超时")
             _, status = os.waitpid(pid, 0)
             completed = True
-            assert os.waitstatus_to_exitcode(status) == 0, received.decode(errors="replace")
+            assert os.waitstatus_to_exitcode(status) == expect_code, received.decode(errors="replace")
         assert sent == len(replies), received.decode(errors="replace")
         return received.decode(errors="replace")
     finally:
@@ -60,6 +64,10 @@ def tty_command(command, replies=("0",), timeout=120):
 
 
 def main():
+    import argparse
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--legacy-source',type=Path,help='可信 v0.3.0 Git 源码目录；先安装旧版再升级候选')
+    args=parser.parse_args()
     root_required()
     paths = [Path("/opt/nodepilot"), Path("/etc/nodepilot"), Path("/usr/local/bin/nodepilot"),
              Path("/etc/systemd/system/nodepilot-renew.service"), Path("/etc/systemd/system/nodepilot-renew.timer")]
@@ -67,7 +75,12 @@ def main():
         raise SystemExit("拒绝在已有 NodePilot 安装上执行破坏性安装测试。")
     manager = Manager()
     try:
-        tty_command(["bash", "install.sh", "--local"])
+        first_installer=str(args.legacy_source.resolve()/'install.sh') if args.legacy_source else 'install.sh'
+        tty_command(["bash", first_installer, "--local"],cwd=args.legacy_source.resolve() if args.legacy_source else ROOT)
+        if not args.legacy_source:
+            from nodepilot_pkg.project_update import read_source, active_repository
+            source=read_source(Path('/opt/nodepilot'))
+            assert source['provenance']=='local-source' and active_repository(source) is None
         print("local install automatically opens TTY menu OK")
         sentinel = Path("/etc/nodepilot/.smoke-sentinel")
         sentinel.write_text("preserve")
@@ -75,9 +88,21 @@ def main():
         tty_command(["bash", "install.sh", "--local"])
         assert sentinel.read_text() == "preserve"
         print("repeat install preserves state OK")
-        tty_command(["bash", "install.sh", "--local", "--upgrade"])
+        tty_command(["bash", "install.sh", "--local", "--upgrade"],source_replies=('y',))
+        from nodepilot_pkg.project_update import read_source, active_repository
+        source=read_source(Path('/opt/nodepilot'))
+        assert source['provenance']=='local-source' and active_repository(source) is None
         assert sentinel.read_text() == "preserve"
         print("local script upgrade preserves state OK")
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='nodepilot-shadow-') as tmp:
+            shadow=Path(tmp)/'nodepilot_pkg';shadow.mkdir()
+            (shadow/'__init__.py').write_text("raise RuntimeError('unverified cwd imported')")
+            tty_command(['bash',str(ROOT/'install.sh'),'--local','--upgrade'],cwd=tmp)
+        print('verified installer ignores shadow package in current directory OK')
+        assert run(['nodepilot','--version'])=='0.4.0'
+        if args.legacy_source:
+            print('trusted v0.3.0 installer -> candidate schema upgrade OK')
         text = tty_command(["nodepilot", "menu"], replies=("invalid", "0"))
         assert "无效选项" in text
         print("invalid menu input loops OK")

@@ -3,8 +3,8 @@
 set -Eeuo pipefail
 umask 077
 
-PAYLOAD_URL='https://github.com/km-hl/Node-Pilot/releases/download/v0.3.0/nodepilot-0.3.0.tar.gz'
-PAYLOAD_SHA256='8e1fc2bda9a1a0ab10444d134ef18c96b8d0085a6287b2f5132a5f928a0f0671'
+PAYLOAD_URL='https://github.com/km-hl/Node-Pilot/releases/download/v0.4.0/nodepilot-0.4.0.tar.gz'
+PAYLOAD_SHA256='645d116e5dd1ceceb4c7af3e5b372997e9de36010f9f29481e4bb46e5c2990ae'
 LOCAL=0
 UPGRADE=0
 for arg in "$@"; do
@@ -29,9 +29,22 @@ case "$(uname -m)" in x86_64|aarch64) ;; *) fail '仅支持 amd64/arm64。' ;; e
 [[ -r /dev/tty && -w /dev/tty ]] || fail '需要 SSH 交互 TTY（ssh -t）。'
 exec 3<>/dev/tty || fail '无法打开 /dev/tty。'
 
+# Presence is only a reason to refuse the shortcut, never proof of validity.
+# Recovery belongs to the SHA-256-verified payload below, not an old manager.
+# Keep program-pending-rc2.json (historical evidence) out of this decision.
+if [[ $UPGRADE -eq 0 && ( -e /opt/nodepilot/program-pending.json || -L /opt/nodepilot/program-pending.json ) ]]; then
+    fail '检测到可能未完成或异常的 Node-Pilot 程序升级事务，尚未确认其有效性。
+已停止进入旧版管理菜单；请从可信 Node-Pilot RC4 或更新源码目录执行：
+sudo bash install.sh --local --upgrade
+原配置和事务记录未被主动删除。'
+fi
+
 if [[ -e /usr/local/bin/nodepilot && $UPGRADE -eq 0 ]]; then
     [[ -f /opt/nodepilot/.owner && ! -L /opt/nodepilot/.owner && ! -L /opt/nodepilot ]] || fail '现有同名程序不属于 NodePilot。'
-    [[ $(cat /opt/nodepilot/.owner) == 'NodePilot schema=1' ]] || fail '所有权标记不匹配。'
+    case "$(cat /opt/nodepilot/.owner)" in
+        'NodePilot schema=1'|'NodePilot schema=2') ;;
+        *) fail '所有权 schema 不兼容，请使用适配现有事务的新安装器。' ;;
+    esac
     [[ ! -L /usr/local/bin/nodepilot ]] || fail '拒绝同名符号链接。'
     expected_launcher='#!/usr/bin/env bash
 # NodePilot owned launcher schema=1
@@ -64,6 +77,8 @@ if [[ $LOCAL -eq 1 ]]; then
     [[ -f $source_dir/tools/package.py && -d $source_dir/nodepilot_pkg ]] || fail '--local 需要完整本地项目。'
     python3 "$source_dir/tools/package.py" --archive "$archive"
     PAYLOAD_SHA256=$(sha256sum "$archive" | cut -d ' ' -f 1)
+    # Local provenance must never inherit the template's Release URL.
+    PAYLOAD_URL=''
 else
     PAYLOAD_URL=${NODEPILOT_SOURCE_URL:-$PAYLOAD_URL}
     PAYLOAD_SHA256=${NODEPILOT_SOURCE_SHA256:-$PAYLOAD_SHA256}
@@ -98,7 +113,8 @@ with tarfile.open(archive, 'r:gz') as t:
         raise SystemExit('不完整项目包')
 PY
 python3 "$workspace/payload/nodepilot" self-check || fail '管理器自检失败。'
-PYTHONPATH="$workspace/payload" python3 -m nodepilot_pkg.deploy "$workspace/payload" "$PAYLOAD_SHA256" "$PAYLOAD_URL" || fail '部署失败，未报告成功。'
+python3 -I -c 'import runpy,sys; sys.path.insert(0,sys.argv[1]); sys.argv=sys.argv[1:]; runpy.run_module("nodepilot_pkg.deploy",run_name="__main__")' \
+    "$workspace/payload" "$workspace/payload" "$PAYLOAD_SHA256" "$PAYLOAD_URL" || fail '部署失败，未报告成功。'
 printf '%s\n' 'NodePilot 安装完成，立即进入菜单。按协议选择时安装官方校验内核。' >&3
 # Clean temporary files before exec: EXIT traps do not run after exec.
 rm -rf -- "$workspace"

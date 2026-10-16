@@ -16,8 +16,23 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from nodepilot_pkg.common import atomic_bytes, atomic_json, read_json, run
+from nodepilot_pkg.common import PilotError,atomic_bytes, atomic_json, read_json, run
 from nodepilot_pkg.cores import Cores
+from nodepilot_pkg.services import listening
+
+
+def wait_client(process,port,timeout=10):
+    """Prove the test client's owned listener; config validation is insufficient."""
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        code=process.poll()
+        if code is not None:raise PilotError(f'测试客户端在监听就绪前退出 ({code})；未发起传输。')
+        try:
+            with socket.create_connection(('127.0.0.1',port),timeout=.2):
+                if listening({'listen':'127.0.0.1','port':port,'transport':'tcp'},process.pid):return
+        except OSError:pass
+        time.sleep(.1)
+    raise PilotError('测试客户端未在有界等待内就绪，或监听不属于其 PID；未发起传输。')
 
 
 def outbound(node, certificate=None):
@@ -87,12 +102,7 @@ def main():
             with (tmp / "log").open("wb") as log:
                 process = subprocess.Popen(start, stdout=log, stderr=log)
                 try:
-                    for _ in range(30):
-                        try:
-                            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                                break
-                        except OSError:
-                            time.sleep(0.1)
+                    wait_client(process,port)
                     # Connect directly to the HTTP proxy. urllib bypasses loopback in
                     # proxy autodetection; an explicit absolute-form request avoids that.
                     import http.client

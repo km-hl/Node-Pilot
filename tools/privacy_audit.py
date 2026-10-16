@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TOP = {".gitignore", ".gitattributes", "README.md", "CONTRIBUTING.md", "LICENSE", "install.sh", "nodepilot"}
+TOP = {".gitignore", ".gitattributes", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE", "install.sh", "nodepilot"}
 PATTERNS = [
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----"),
     re.compile(rb"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b"),

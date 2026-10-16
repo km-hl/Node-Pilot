@@ -44,7 +44,7 @@ class CaddyConfigTests(unittest.TestCase):
         issuer = tls["automation"]["policies"][0]["issuers"][0]
         self.assertNotIn("email", issuer)
         self.assertTrue(issuer["challenges"]["tls-alpn"]["disabled"])
-        self.assertEqual(config["apps"]["http"]["servers"]["http01"]["listen"], [":80"])
+        self.assertEqual(config["apps"]["http"]["servers"]["http01"]["listen"], ['tcp4/0.0.0.0:80','tcp6/[::]:80'])
 
     def test_multiple_nodes_keep_separate_listener_and_one_http01_server(self):
         a, b = self_node(), self_node(port=14444, local=18004)
@@ -76,6 +76,27 @@ class CaddyConfigTests(unittest.TestCase):
                     caddy.sync([self_node()])
             command.assert_not_called()
 
+    def test_loaded_foreign_caddy_refused_even_when_owned_file_exists(self):
+        from nodepilot_pkg.cores import Cores
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);caddy=Caddy(p/'state',Cores(p/'cores'),p)
+            unit=p/'nodepilot-caddy.service';unit.write_text(caddy.content())
+            for loaded in ('/run/systemd/system/nodepilot-caddy.service','/usr/lib/systemd/system/nodepilot-caddy.service'):
+                with patch('nodepilot_pkg.caddy.run',return_value=loaded) as command:
+                    with self.assertRaisesRegex(PilotError,'外部路径'):caddy.sync([])
+                self.assertTrue(all(c.args[0][1]=='show' for c in command.call_args_list))
+                self.assertEqual(unit.read_text(),caddy.content())
+
+    def test_fragment_query_failure_cannot_authorize_caddy_mutation(self):
+        from nodepilot_pkg.cores import Cores
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);caddy=Caddy(p/'state',Cores(p/'cores'),p)
+            unit=p/'nodepilot-caddy.service';unit.write_text(caddy.content())
+            with patch('nodepilot_pkg.caddy.run',side_effect=PilotError('query failed')) as command:
+                with self.assertRaisesRegex(PilotError,'query failed'):caddy.sync([])
+            self.assertEqual(unit.read_text(),caddy.content())
+            self.assertTrue(all(c.args[0][1]=='show' for c in command.call_args_list))
+
 
 class FakeCaddy:
     def __init__(self):
@@ -84,7 +105,7 @@ class FakeCaddy:
     def preflight(self, n, old, others):
         pass
 
-    def prepare(self, n, revision):
+    def prepare(self, n, revision, renew=False):
         for name in ("certificate.pem", "key.pem"):
             (revision / name).write_text("private fixture")
         n["caddy"].update(certificate=str(revision / "certificate.pem"), key=str(revision / "key.pem"))
@@ -96,6 +117,9 @@ class FakeCaddy:
             raise PilotError("simulated shared target failure")
 
     def ready(self, n):
+        pass
+
+    def check(self, nodes):
         pass
 
     def certificate_files(self, n):
@@ -165,7 +189,10 @@ class CaddyTransactionTests(unittest.TestCase):
         with self.manager.locked():
             backup = self.manager.backup()
             self.manager.delete(a["id"])
-            ids = self.manager.restore(backup)
+            # FakeCaddy writes text fixture PEMs; real validation is covered by
+            # restore/OpenSSL tests and the native Caddy smoke.
+            with patch('nodepilot_pkg.certificates.validate_pair'):
+                ids = self.manager.restore(backup)
         self.assertEqual(ids, [a["id"]])
         self.assertEqual(self.manager.get(a["id"])["caddy"]["certificate_mode"], "import")
         self.assertEqual(self.caddy.nodes[0]["reality"]["mode"], "self")

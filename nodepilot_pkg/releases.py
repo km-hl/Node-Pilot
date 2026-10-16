@@ -17,7 +17,7 @@ def version(value):
 
 
 def repository(value):
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value) or any(p in {'.','..'} for p in value.split('/')):
         raise PilotError("发布仓库格式无效。")
     return value
 

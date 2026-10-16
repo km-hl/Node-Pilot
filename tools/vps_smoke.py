@@ -20,7 +20,8 @@ from nodepilot_pkg.common import PilotError, atomic_bytes, atomic_json, private_
 from nodepilot_pkg.manager import Manager
 from nodepilot_pkg.model import new_node
 from nodepilot_pkg.share import share
-from nodepilot_pkg.system import port_free, probe_reality
+from nodepilot_pkg.system import port_free
+from nodepilot_pkg.targets import rank_targets
 
 
 def available(preferred, transport="tcp"):
@@ -44,18 +45,10 @@ def setup(directory):
     server = os.environ.get("SSH_CONNECTION", "").split()
     if len(server) != 4:
         raise PilotError("请通过已授权的 SSH 会话运行，使用 SSH_CONNECTION 获取分享地址。")
-    target = None
-    # This is a disposable test pool, not a production default. A TLS preflight
-    # alone does not prove REALITY interoperability; client_probe is required.
-    for candidate in ("www.cloudflare.com", "www.apple.com", "www.microsoft.com"):
-        try:
-            probe_reality(candidate + ":443", candidate)
-            target = candidate
-            break
-        except PilotError:
-            continue
-    if target is None:
-        raise PilotError("未找到可通过 TLS 1.3 / h2 检查的测试 Reality 目标。")
+    ranked = rank_targets(report=lambda message: print(message, flush=True))
+    if not ranked:
+        raise PilotError("未找到完成 TLS / CF 筛查的测试目标；请核对网络后重试。")
+    selected = ranked[0]
     ports = {"reality": available(9443), "anytls": available(8443)}
     ports["hysteria2"] = available(ports["reality"], "udp")
     with manager.locked():
@@ -63,12 +56,13 @@ def setup(directory):
             manager.update_core(core)
         nodes = []
         for protocol in ("reality", "anytls", "hysteria2"):
-            sni = target if protocol == "reality" else "nodepilot-test.example.com"
+            sni = selected['sni'] if protocol == "reality" else "nodepilot-test.example.com"
             n = new_node(protocol, "NodePilot disposable test " + protocol, server[2], ports[protocol], sni=sni)
             if protocol == "reality":
                 private, public = manager.cores.keypair()
                 n["reality"] = dict(private_key=private, public_key=public, uuid=str(uuid.uuid4()),
-                    target=target + ":443", server_names=[target], short_id=secrets.token_hex(8), fingerprint="chrome")
+                    target=selected['target'], server_names=[sni], selection=selected, mode='external',
+                    short_id=secrets.token_hex(8), fingerprint="chrome")
             else:
                 n["tls"] = dict(mode="selfsigned", certificate="/nonexistent", key="/nonexistent")
                 if protocol == "hysteria2":
