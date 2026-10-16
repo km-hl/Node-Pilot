@@ -356,7 +356,7 @@ class SourceDeployTests(unittest.TestCase):
             self.install(env,confirm=lambda old,new:True);before=(root/'source.json').read_bytes()
             self.install(env);self.assertEqual((root/'source.json').read_bytes(),before)
 
-    def test_source_intents_require_v3_so_old_managers_refuse_instead_of_ignoring_policy(self):
+    def test_source_intents_require_v4_so_old_managers_refuse_instead_of_ignoring_policy(self):
         from nodepilot_pkg import deploy
         with tempfile.TemporaryDirectory() as d:
             env=self.environment(Path(d));original=deploy.checkpoint
@@ -365,7 +365,7 @@ class SourceDeployTests(unittest.TestCase):
                 if step=='candidate':raise SystemExit('source-aware intent persisted')
             with patch('nodepilot_pkg.deploy.checkpoint',side_effect=crash),self.assertRaises(SystemExit):self.install(env)
             root,launcher,units,m,source,sd=env;journal=root/'program-pending.json';record=read_json(journal)
-            self.assertEqual(record['transaction_version'],3);self.assertIn('source_after',record)
+            self.assertEqual(record['transaction_version'],4);self.assertIn('source_after',record)
             del record['source_after'];atomic_json(journal,record);before=journal.read_bytes()
             with patch('nodepilot_pkg.deploy.run',side_effect=sd),self.assertRaises(PilotError):deploy.recover_program(root,launcher,units,m)
             self.assertEqual(journal.read_bytes(),before)

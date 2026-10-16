@@ -6,10 +6,12 @@ import shutil
 import sys
 from pathlib import Path
 
+from . import installation
 from .common import PilotError, atomic_bytes, atomic_json, fsync_dir, private_dir, read_json, run
 from .installation import (LAUNCHER, RENEW_SERVICE, RENEW_TIMER, TIMER, owned_unit,
-                           boot_id, preflight_program, restore_timer, timer_state,
-                           timer_commit, verify_timer_commit)
+                           preflight_program, restore_timer, timer_state,
+                           timer_commit, verify_timer_commit, recovery_timer_context,
+                           verify_recovery_topology, timer_links)
 from .manager import LEGACY_OWNER, Manager, OWNER
 from .system import supported
 from .project_update import (active_repository, authorize_source_change, planned_source,
@@ -19,6 +21,10 @@ UNITS = {'nodepilot-renew.service': RENEW_SERVICE, TIMER: RENEW_TIMER}
 PHASES = {'preparing', 'installing', 'rolling_back', 'complete'}
 REQUIRED = {'nodepilot', *('nodepilot_pkg/' + name + '.py'
                          for name in ('__init__', 'cli', 'deploy', 'manager', 'installation'))}
+STEPS = {'intent','candidate','current','owners','launcher','units','reloaded',
+         'timer-intent','timer','checked','legacy-migrated','rollback',
+         'rollback-current','rollback-launcher','rollback-timer-cleanup',
+         'rollback-units','rollback-reloaded','rollback-timer'}
 
 
 def assert_program_owned(root, launcher, units):
@@ -67,7 +73,7 @@ def snapshot(root, launcher, units, manager, old, legacy=False):
         if enabled not in {'', 'disabled'} or active not in {'', 'inactive'}:
             raise PilotError('缺失 timer 的 systemd 状态异常；拒绝覆盖。')
         state = {'unit_file_state': 'disabled', 'active_state': 'inactive'}
-    return {'units': previous, 'timer_exists': exists, 'timer': state, 'boot_id': boot_id(),
+    return {'units': previous, 'timer_exists': exists, 'timer': state, 'boot_id': installation.boot_id(),
             'first_install': old is None and not exists,
             'launcher': text_or_none(launcher), 'root_owner': text_or_none(root / '.owner'),
             'state_owner': text_or_none(manager.state / '.owner') if manager else None,
@@ -97,7 +103,7 @@ def validate_record(record, root, launcher, units, manager):
         if 'previous' in record or record['phase'] != 'installing':
             raise PilotError('程序事务缺少版本；保留证据。')
         return  # Original RC2 schema=2 intent, migrated durably before any changes.
-    if type(record['transaction_version']) is not int or record['transaction_version'] not in {1,2,3}:
+    if type(record['transaction_version']) is not int or record['transaction_version'] not in {1,2,3,4}:
         raise PilotError('未知程序事务版本；保留证据。')
     if record['transaction_version']>=2 and 'source_after' not in record:
         raise PilotError('程序事务缺少预期来源；保留证据。')
@@ -126,16 +132,157 @@ def validate_record(record, root, launcher, units, manager):
             not isinstance(n, str) or not re.fullmatch(r'nodepilot|nodepilot_pkg/[a-z_]+\.py', n)
             or not isinstance(h, str) or not re.fullmatch('[0-9a-f]{64}', h) for n, h in hashes.items()):
         raise PilotError('事务缺少完整目标 SHA-256。')
-    if record['transaction_version'] == 3:
+    if record['transaction_version'] == 4:
+        context = record.get('timer_context')
+        if (not isinstance(context, dict) or set(context) != {'boot_id','timer','links','mode'} or
+                not isinstance(context['mode'],str) or context['mode'] not in {'original','preserve','install'} or
+                not valid_boot_id(context['boot_id']) or not valid_links(context['links']) or
+                not isinstance(context['timer'], dict) or set(context['timer']) != {'unit_file_state','active_state'} or
+                not isinstance(context['timer']['unit_file_state'],str) or context['timer']['unit_file_state'] not in {'enabled','enabled-runtime','disabled'} or
+                not isinstance(context['timer']['active_state'],str) or context['timer']['active_state'] not in {'active','inactive'} or
+                not isinstance(record.get('step'),str) or record['step'] not in STEPS or
+                (context['mode']=='install' and not p['first_install']) or
+                (context['mode']=='install' and record['phase']=='complete') or
+                (record['phase']=='preparing' and record['step']!='intent') or
+                (record['phase']=='rolling_back' and not record['step'].startswith('rollback')) or
+                (record['phase']=='installing' and (record['step'].startswith('rollback') or record['step'] in {'intent','checked'}))):
+            raise PilotError('程序事务 timer 恢复证据/步骤无效；保留日志。')
+    if record['transaction_version'] >= 3:
         if 'boot_id' not in p or not valid_boot_id(p['boot_id']):
             raise PilotError('程序事务开始 boot_id 无效。')
         if record['phase'] == 'complete':
             c = record.get('commit')
-            desired = {'unit_file_state':'enabled','active_state':'active'} if p['first_install'] else p['timer']
+            desired = effective_timer(record)
             if (record.get('step') != 'checked' or not isinstance(c, dict) or
                     set(c) != {'boot_id', 'timer', 'links'} or not valid_boot_id(c['boot_id']) or
                     c['timer'] != desired or not valid_links(c['links'])):
                 raise PilotError('complete 提交证据缺失/无效；保留事务。')
+            if record['transaction_version']==4 and any(c[k]!=record['timer_context'][k] for k in ('boot_id','timer','links')):
+                raise PilotError('complete 与已确认的恢复 timer 证据不一致；保留事务。')
+
+
+def effective_timer(record):
+    context = record.get('timer_context') if record.get('transaction_version') == 4 else None
+    if context and context['mode'] == 'preserve':
+        return context['timer']
+    p = record['previous']
+    return {'unit_file_state':'enabled','active_state':'active'} if p['first_install'] else p['timer']
+
+
+def plan_timer(record, units, reviewed=False):
+    """Read-only preflight shared by forward recovery and rollback."""
+    p = record['previous']
+    observed = recovery_timer_context(units, run)
+    verify_recovery_topology(observed,units)
+    if reviewed:
+        return {**observed, 'mode':'preserve'}
+    context = record.get('timer_context') if record.get('transaction_version') == 4 else None
+    before = context['boot_id'] if context else p.get('boot_id')
+    now = observed['boot_id']
+    if before is None or now is None:
+        raise PilotError('非 complete 事务缺少可读取的启动周期证据；保留日志。按 README 人工核对 timer 后以日志 SHA-256 恢复，不能删除日志。')
+    if before == now:
+        if context is None:
+            return {**observed, 'mode':'install' if p['first_install'] else 'original'}
+        if context['mode']=='preserve':
+            if observed != {k:context[k] for k in ('boot_id','timer','links')}:
+                raise PilotError('本次启动中 timer 已偏离恢复时确认的策略；保留日志，不覆盖用户操作。')
+        elif observed['links'] != context['links'] and record['step'] not in {'timer-intent','rollback','rollback-launcher'}:
+            raise PilotError('timer 启用链接在事务操作范围外变化；保留日志。')
+        return context
+    if context is None:
+        raise PilotError('旧事务没有升级前的启用链接证据，不能自动跨重启恢复；保留日志并按 README 人工核对。')
+    if not (units/TIMER).exists() and not p['timer_exists'] and not any(context['links'].values()) and context['timer']==observed['timer']:
+        pass  # Nothing was installed/enabled: no old runtime policy to replay.
+    else:
+        verify_timer_commit({k:context[k] for k in ('boot_id','timer','links')}, context['timer'], units, run)
+    return {**observed, 'mode':'install' if context['mode']=='install' else 'preserve'}
+
+
+def reconcile_timer(record, units):
+    context = record['timer_context']
+    if context['mode']=='preserve':
+        if recovery_timer_context(units,run) != {k:context[k] for k in ('boot_id','timer','links')}:
+            raise PilotError('恢复期间 timer 策略/状态/链接变化；未重放旧快照。')
+    else:
+        restore_timer(effective_timer(record),run)
+
+
+def save_timer(record, units, journal, step):
+    mode = record['timer_context']['mode']
+    record['timer_context'] = {**recovery_timer_context(units,run),
+                               'mode':'original' if mode=='install' else mode}
+    checkpoint(journal,record,step)
+
+
+def recovery_files(record, root, launcher, units, manager):
+    """Reject unknown contents before replaying any owned file write."""
+    p = record['previous']
+    for path, allowed in [(launcher,{p['launcher'],LAUNCHER}),
+                          (root/'.owner',{p['root_owner'],OWNER})]:
+        if text_or_none(path) not in allowed:
+            raise PilotError(f'恢复文件被外部修改：{path.name}；保留事务。')
+    if manager is not None and text_or_none(manager.state/'.owner') not in {p['state_owner'],OWNER}:
+        raise PilotError('恢复状态 owner 已被外部修改；保留事务。')
+    for name in UNITS:
+        if text_or_none(units/name) not in {p['units'][name],UNITS[name]}:
+            raise PilotError('恢复单元内容与原/目标快照不一致；保留事务。')
+    source = read_source(root)
+    if text_or_none(root/'source.json') != p['source'] and source != expected_source(record):
+        raise PilotError('恢复来源被外部修改；保留事务。')
+    current = root/'app/current'
+    actual = current.resolve().name if current.is_symlink() else None
+    if record['phase']=='preparing':
+        if (actual != record['old'] or text_or_none(launcher)!=p['launcher'] or
+                any(text_or_none(units/n)!=p['units'][n] for n in UNITS) or
+                (p['root_owner'] is not None and text_or_none(root/'.owner')!=p['root_owner']) or
+                (manager is not None and text_or_none(manager.state/'.owner')!=p['state_owner'])):
+            raise PilotError('preparing 阶段与实际文件不一致；未执行候选，保留事务。')
+    elif record.get('transaction_version')==4 and record['phase']=='installing' and record['step'] not in {'candidate','legacy-migrated'}:
+        if actual != record['destination']:
+            raise PilotError('已切换阶段的 current 不指向目标；保留事务。')
+        order=['current','owners','launcher','units','reloaded','timer-intent','timer']
+        index=order.index(record['step'])
+        if index>=1 and (text_or_none(root/'.owner')!=OWNER or
+                (manager is not None and text_or_none(manager.state/'.owner')!=OWNER)):
+            raise PilotError('owner 阶段与实际文件不一致；保留事务。')
+        if index>=2 and text_or_none(launcher)!=LAUNCHER:
+            raise PilotError('launcher 阶段与实际文件不一致；保留事务。')
+        if index>=3 and any(text_or_none(units/n)!=UNITS[n] for n in UNITS):
+            raise PilotError('units 阶段与实际文件不一致；保留事务。')
+    elif record.get('transaction_version')==4 and record['phase']=='rolling_back':
+        steps=['rollback','rollback-current','rollback-launcher','rollback-timer-cleanup',
+               'rollback-units','rollback-reloaded','rollback-timer']
+        index=steps.index(record['step'])
+        if index>=1 and actual!=record['old']:
+            raise PilotError('回滚 current 阶段与实际不一致；保留事务。')
+        if index>=2 and text_or_none(launcher)!=p['launcher']:
+            raise PilotError('回滚 launcher 阶段与实际不一致；保留事务。')
+        if index>=4 and any(text_or_none(units/n)!=p['units'][n] for n in UNITS):
+            raise PilotError('回滚 units 阶段与实际不一致；保留事务。')
+
+
+def persist_timer_plan(record, plan, journal):
+    migrated = record.get('transaction_version') != 4
+    changed = record.get('timer_context') != plan
+    if migrated or changed:
+        # Preserve exact historical intent before migrating recovery semantics.
+        raw = journal.read_bytes()
+        audit = journal.parent / ('program-pending-v'+str(record['transaction_version'])+'-'+hashlib.sha256(raw).hexdigest()[:16]+'.json')
+        if audit.is_symlink() or (audit.exists() and (not audit.is_file() or audit.stat().st_size!=len(raw) or audit.read_bytes()!=raw)):
+            raise PilotError('历史事务审计证据冲突；保留活动日志。')
+        if not audit.exists():atomic_bytes(audit,raw)
+    if migrated:
+        record['transaction_version']=4
+        record['previous'].setdefault('boot_id',None)
+        if record.get('step') not in STEPS:
+            record['step']='legacy-migrated' if record['phase']=='installing' else 'rollback' if record['phase']=='rolling_back' else 'intent'
+        if 'source_after' not in record:
+            record['source_after']=expected_source(record) or read_source(journal.parent) or {'schema':1,'provenance':'local-source'}
+            record['repository']=active_repository(record['source_after']) or ''
+    if migrated or changed:
+        record['timer_context']=plan
+        atomic_json(journal,record)
 
 
 def valid_boot_id(value):
@@ -199,6 +346,10 @@ def assert_old_revision(app, name, expected_version=None):
 
 
 def point(app, name):
+    current = app/'current'
+    if (name is None and not current.exists() and not current.is_symlink()) or (
+            name is not None and current.is_symlink() and current.readlink()==Path(name)):
+        return
     temporary = app / '.current-new'
     if temporary.exists() and not temporary.is_symlink():
         raise PilotError('临时 current 路径不属于 NodePilot。')
@@ -212,6 +363,8 @@ def point(app, name):
 
 
 def restore_file(path, content, mode=0o600):
+    if text_or_none(path)==content:
+        return
     if content is None:
         path.unlink(missing_ok=True)
         fsync_dir(path.parent)
@@ -244,9 +397,9 @@ def finalize_program(record, root, launcher, units, manager, reviewed_timer=Fals
         if text_or_none(units/name)!=content:
             raise PilotError(f'complete 校验失败：{name} 内容不匹配；保留日志。')
     p=record['previous']
-    desired={'unit_file_state':'enabled','active_state':'active'} if p['first_install'] else p['timer']
+    desired=effective_timer(record)
     try:
-        verify_timer_commit(record.get('commit') if record.get('transaction_version') == 3 else None,
+        verify_timer_commit(record.get('commit') if record.get('transaction_version') in {3,4} else None,
                             desired, units, run, reviewed=reviewed_timer)
     except (PilotError, OSError) as error:
         raise PilotError(f'complete timer 校验失败：{error} 保留日志；按 README 人工核对后使用 '
@@ -283,28 +436,43 @@ def review_complete(manager, digest, root=Path('/opt/nodepilot'),
         finalize_program(record, root, launcher, units, manager, reviewed_timer=True)
 
 
-def rollback_program(record, root, launcher, units, manager):
+def rollback_program(record, root, launcher, units, manager, timer_plan=None):
     """Journal remains rolling_back until every restore, including systemd, succeeds."""
     journal = root / 'program-pending.json'
-    record['phase'] = 'rolling_back'
-    checkpoint(journal, record, 'rollback')
+    if record['phase']!='rolling_back':
+        record['phase'] = 'rolling_back'
+        checkpoint(journal, record, 'rollback')
+    recovery_files(record,root,launcher,units,manager)
+    plan=timer_plan if timer_plan is not None else plan_timer(record,units)
+    if plan['mode']=='preserve' and recovery_timer_context(units,run)!={k:plan[k] for k in ('boot_id','timer','links')}:
+        raise PilotError('回滚前 timer 偏离已确认的本次启动策略；保留 rolling_back。')
+    persist_timer_plan(record,plan,journal)
     p = record['previous']
     if record['old'] is not None and (root / 'app' / record['old']).is_symlink():
         raise PilotError('原程序修订为外部链接；保留事务。')
     if record['old'] is not None and not (root / 'app' / record['old']).is_dir():
         raise PilotError('原程序修订缺失；保留事务。')
     point(root / 'app', record['old'])
+    checkpoint(journal,record,'rollback-current')
     restore_file(launcher, p['launcher'], 0o755)
+    checkpoint(journal,record,'rollback-launcher')
     # Keep the unit available until its symlinks and running state are removed.
     if not p['timer_exists'] and (units / TIMER).exists():
-        run(['systemctl', 'stop', TIMER])
-        run(['systemctl', 'disable', TIMER])
-        run(['systemctl', 'disable', '--runtime', TIMER])
+        cleanup=recovery_timer_context(units,run)
+        verify_recovery_topology(cleanup,units)
+        if cleanup['timer']['active_state']=='active':run(['systemctl','stop',TIMER])
+        if cleanup['links']['persistent']:run(['systemctl','disable',TIMER])
+        if cleanup['links']['runtime']:run(['systemctl','disable','--runtime',TIMER])
+        record['timer_context']={**recovery_timer_context(units,run),'mode':'preserve'}
+        checkpoint(journal,record,'rollback-timer-cleanup')
     for name, content in p['units'].items():
         restore_file(units / name, content, 0o644)
+    checkpoint(journal,record,'rollback-units')
     run(['systemctl', 'daemon-reload'])
+    checkpoint(journal,record,'rollback-reloaded')
     if p['timer_exists']:
-        restore_timer(p['timer'], run)
+        reconcile_timer(record,units)
+    save_timer(record,units,journal,'rollback-timer')
     restore_file(root / 'source.json', p['source'])
     if manager is not None:
         restore_file(manager.state / '.owner', p['state_owner'])
@@ -315,7 +483,7 @@ def rollback_program(record, root, launcher, units, manager):
     fsync_dir(root)
 
 
-def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/nodepilot'), units=Path('/etc/systemd/system'), manager=None):
+def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/nodepilot'), units=Path('/etc/systemd/system'), manager=None, reviewed_timer=None):
     """Caller holds manager.locked(); new intents resume or finish durable rollback."""
     root, launcher, units = map(Path, (root, launcher, units))
     journal = root / 'program-pending.json'
@@ -328,6 +496,12 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
     assert_program_owned(root, launcher, units)
     record = read_json(journal)
     validate_record(record, root, launcher, units, manager)
+    if reviewed_timer is not None:
+        if (not isinstance(reviewed_timer,str) or not re.fullmatch('[0-9a-f]{64}',reviewed_timer) or
+                hashlib.sha256(journal.read_bytes()).hexdigest()!=reviewed_timer):
+            raise PilotError('人工恢复需要已核对的精确日志 SHA-256；未改变事务。')
+        if record['phase']=='complete':
+            raise PilotError('complete 请使用原有 finalize-program 人工入口。')
     app = root / 'app'
     if record['phase']=='complete':
         finalize_program(record,root,launcher,units,manager)
@@ -347,14 +521,22 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
         atomic_json(evidence, record)
         record['previous'] = snapshot(root, launcher, units, manager, record.get('old'), legacy=True)
         record['hashes'] = verify_candidate(destination)
+        # This is a current observation, NOT proof of the RC2 transaction boot.
+        record['previous']['boot_id']=None
         record['transaction_version'] = 1
         checkpoint(journal, record, 'legacy-migrated')
+        reviewed_timer=True  # RC2 has no old timer snapshot to replay at all.
+    recovery_files(record,root,launcher,units,manager)
+    if record['phase']=='installing':
+        verify_candidate(destination, record['hashes'], record.get('target_version'))
+    plan=plan_timer(record,units,reviewed=reviewed_timer is not None)
+    persist_timer_plan(record,plan,journal)
     if record['phase'] == 'rolling_back':
-        rollback_program(record, root, launcher, units, manager)
+        rollback_program(record, root, launcher, units, manager, timer_plan=plan)
         return True
     if record['phase'] == 'preparing':
         # Interrupted copies are never executed; original installation is intact.
-        rollback_program(record, root, launcher, units, manager)
+        rollback_program(record, root, launcher, units, manager, timer_plan=plan)
         return True
     # Reject corruption without rollback/deletion, preserving forensic evidence.
     verify_candidate(destination, record['hashes'], record.get('target_version'))
@@ -374,17 +556,20 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
         run(['systemctl', 'daemon-reload'])
         checkpoint(journal, record, 'reloaded')
         p = record['previous']
-        desired = {'unit_file_state': 'enabled', 'active_state': 'active'} if p['first_install'] else p['timer']
-        restore_timer(desired, run)
-        checkpoint(journal, record, 'timer')
+        desired = effective_timer(record)
+        checkpoint(journal,record,'timer-intent')
+        reconcile_timer(record,units)
+        save_timer(record,units,journal,'timer')
         run(['python3', destination / 'nodepilot', 'self-check'])
         source=expected_source(record)
         if source is not None:
             atomic_json(root / 'source.json', source)
-        if record['transaction_version'] == 3:
+        if record['transaction_version'] >= 3:
             record['commit'] = timer_commit(units, run)
             if record['commit']['timer'] != desired:
                 raise PilotError('提交前 timer 状态变化；拒绝记录 complete。')
+            if record['transaction_version']==4 and any(record['commit'][k]!=record['timer_context'][k] for k in ('boot_id','timer','links')):
+                raise PilotError('提交前 timer 证据变化；拒绝记录 complete。')
         record['phase'] = 'complete'
         checkpoint(journal, record, 'checked')
     except (Exception, KeyboardInterrupt) as error:
@@ -393,7 +578,7 @@ def recover_program(root=Path('/opt/nodepilot'), launcher=Path('/usr/local/bin/n
             # failed. Never undo a committed transaction on this error path.
             raise PilotError('complete 提交写入返回错误；保留事务，下次只读核对最终化。') from error
         try:
-            rollback_program(record, root, launcher, units, manager)
+            rollback_program(record, root, launcher, units, manager, timer_plan=record['timer_context'])
         except (Exception, KeyboardInterrupt) as rollback:
             raise PilotError(f'程序升级失败，回滚未完成：{rollback}；保留 program-pending.json，请重试恢复。') from error
         raise
@@ -444,6 +629,8 @@ def deploy(source, digest, source_url='', root=Path('/opt/nodepilot'), launcher=
                     and prior_source==next_source):
                 return
         previous = snapshot(root, launcher, units, manager, old.name if old else None)
+        context = {'boot_id':previous['boot_id'], 'timer':dict(previous['timer']),
+                   'links':timer_links(units), 'mode':'install' if previous['first_install'] else 'original'}
         backup = manager.backup()
         private_dir(root)
         if not (root / '.owner').exists():
@@ -452,13 +639,13 @@ def deploy(source, digest, source_url='', root=Path('/opt/nodepilot'), launcher=
         app = private_dir(root / 'app')
         destination = app / digest.lower()
         # Older RC3/RC4 managers must reject reboot-aware intents explicitly.
-        record = {'schema': 2, 'transaction_version': 3, 'phase': 'preparing', 'step': 'intent',
+        record = {'schema': 2, 'transaction_version': 4, 'phase': 'preparing', 'step': 'intent',
                   'root': str(root), 'launcher': str(launcher), 'units': str(units),
                   'destination': destination.name, 'old': old.name if old else None,
                   'old_version': version(old) if old else None, 'target_version': version(source),
                   'backup': str(backup), 'previous': previous,
                   'repository': active_repository(next_source) or '', 'source_after':next_source,
-                  'hashes': hashes}
+                  'hashes': hashes, 'timer_context':context}
         validate_record(record, root, launcher, units, manager)
         journal = root / 'program-pending.json'
         atomic_json(journal, record)

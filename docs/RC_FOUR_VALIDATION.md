@@ -1,6 +1,6 @@
 # v0.4.0 RC4：安装器事务保护与发布前验收
 
-本页保留历次 RC4 历史证据（行号对应当时提交）。**当前结论以文末“RC4 最终事务边界修复”一节为准**，基线 `791af46`；不创建 RC5。前文测试、产物摘要和环境结论不能代替最新节的本轮验证。
+本页保留历次 RC4 历史证据（行号对应当时提交）。**当前结论以文末“RC4 非 complete 跨启动恢复”一节为准**，基线 `587de90`；不创建 RC5。前文测试、产物摘要和环境结论不能代替最新节的本轮验证。
 
 日期：2026-10-15。分支 `codex/v0.4.0-stability`，现有 [PR #1](https://github.com/km-hl/Node-Pilot/pull/1)。开始前 fetch 并核对 GitHub，最新提交仍为审查基线 `5a7a6ab83d51bcef1d1d6bd1956693f54def8f58`。修改前 Linux 完整基线 159 项通过。PR 保持草稿，不合并 main，不创建 Release。
 
@@ -150,7 +150,7 @@ Release → 本地、本地 → Release、仓库 A → B 均要求必要确认�
 
 收尾候选包 SHA-256：`5ae17c93f8e7cb570950e9f2e6626b5596b11d3597a7840c505dbb7d00259346`。此摘要现为历史产物；当前以文末最终事务边界修复节为准，不创建 Release 或 RC5。
 
-## RC4 最终事务边界修复（当前结论）
+## RC4 最终事务边界修复（历史结论）
 
 2026-10-15，本轮开始实际 fetch，远端开发分支及草稿 PR #1 仍为审查基线 `791af460de10d5cb7911c57ba510e9d52ddd27db`；两个问题仍存在。仅在 `codex/v0.4.0-stability` 修复，不创建 RC5、不合并 main、不发布稳定 Release。
 
@@ -258,3 +258,106 @@ python3 tools/bootstrap_smoke.py --disposable --legacy-source .test-tools/rc4-so
 剩余发布验收：真实 Cloudflare DNS-01 TXT 创建/传播/故障清理、Staging/正式签发及自动续期/插件脱敏，部分公网 IPv6，Ubuntu/arm64 及发行版全矩阵，1c/256MiB 低内存整机和长期负载，客户端 GUI，以及重启期间真实节点监听/证书续期行为。上述结果不能由 Mock/原生配置解析/WSL 代替。
 
 **建议现在冻结代码并进入正式发布验收**；保留 RC4 草稿，不建议直接合并或发布稳定版。最终本地候选包 SHA-256：`320bd03dcfbab066f1c38e837b13f2092d37cbb1d0910179073209d2eec3775b`，Windows/Linux 可复现一致，安装器重新绑定同一摘要。dist、测试内核、凭据、运行日志均不上传；默认 v0.4.0 Release 附件尚未发布，不把本地流程等同于公网安装验收。
+
+## RC4 非 complete 跨启动恢复（当前结论）
+
+2026-10-16，开始前 fetch 并核对远端分支及现有草稿 PR #1，均为审查基线 `587de90e5aa3a8cbe1798f55385dd57643467bd3`，问题仍存在。仅在原开发分支修复 P1；不创建 RC5、新 PR 或 Release，不合并 main。以下行号对应本轮最终源码，前文是历史结果。
+
+### 根因、变更及兼容性
+
+原 `recover_program()` 与 `rollback_program()` 都将事务开始时的 `previous.timer` 直接交给 `restore_timer()`；非 complete 没有可用于跨启动判定的启用链接证据。因此 enabled-runtime 会被重新建立，disabled+active 会被重新启动，enabled+inactive 会覆盖新启动后的正常 active 状态。
+
+| 文件/关键行 | 修复 |
+|---|---|
+| `nodepilot_pkg/deploy.py:63,85,164,172` | 新事务保存 timer_context：boot_id、启用/运行状态、持久/runtime 链接身份及恢复模式。同 boot 保留原 RC4 语义；跨 boot 复用已有只读证据判定，通过后持久化新启动观察到的 preserve 策略。 |
+| `nodepilot_pkg/deploy.py:202,211,218,265` | 成功和回滚共用策略；保存 timer 操作意图/完成点，拒绝阶段与 current、owner、launcher、单元、来源矛盾；迁移或重定策略前保留原日志精确字节的 SHA-256 命名私有审计副本。 |
+| `nodepilot_pkg/deploy.py:439,486` | 回滚增加持久检查点，失败保留 rolling_back；preparing 不执行未完成候选。人工恢复仅接受精确日志摘要，确认继续既定事务并保留当前 timer，不豁免候选哈希、路径、所有权、来源和阶段校验。 |
+| `nodepilot_pkg/installation.py:81,95` | 复用现有 timer/link/boot 工具，补充真正缺失 timer 的观察与标准自有启用拓扑核对。masked、转换状态、别名/外部链接拒绝。 |
+| `tests/test_release_candidate.py:928`、`tests/test_project_source.py` | 新增非 complete 启动周期、阶段、失败重试、首次安装及旧日志人工确认矩阵；调整旧测试的真实模拟 runtime 目录和新事务版本断言。 |
+| `tools/recovery_smoke.py:1`、`tools/program_smoke.py:64`、`tools/bootstrap_smoke.py` | 新增明确标注模拟启动证据的原生 systemd 测试；测试清理先完整校验全部自有审计文件再清理；旧 RC4 实际拒绝新子版本。生产卸载仍保留审计证据。 |
+| `README.md:147,165`、`CHANGELOG.md`、本报告 | 记录新旧语义、首次安装例外、经过原生测试的人工步骤和验收边界。安装器同步绑定新候选摘要。 |
+
+新事务子版本为 **4**，outer schema/owner 仍为 2，产品仍是 v0.4.0 RC4。版本 3 只有 complete 的提交链接证据；若仅增加可忽略字段，旧 RC4 管理器仍会接受并重放旧 timer。子版本 4 使不理解新语义的旧管理器安全拒绝，未修改节点/证书数据格式。
+
+合法 RC2 日志仍保留原证据、观察当前策略后恢复，因为它没有旧 timer 快照可重放；不会把观察时 boot_id 冒充事务开始 boot_id。子版本 1/2 缺失历史 boot_id、子版本 3 跨 boot 缺失原链接时保留日志等待人工核对；版本 3 同 boot 可按原语义迁移。各版本 complete 及既有 `finalize-program` 保持只读最终化规则，版本 4 还要求提交证据与已确认 context 一致。旧安装器活动日志保护和可信源码 `--local --upgrade` 路径均回归；旧 v0.3 直接入口不能追溯加固。
+
+### 阶段及六状态结果
+
+| 阶段 | 同 boot | 跨 boot |
+|---|---|---|
+| preparing / intent | 回滚准备工作，不执行未完成复制候选 | 验证文件与启动证据后回滚；不重放上一启动的 timer |
+| installing / candidate 至 timer | 验证候选及已有完成步骤，保留原启用/运行语义 | 先证明变化符合启动策略，再保存 preserve 并继续；不启用/启动/停止既有 timer |
+| rolling_back / 各恢复检查点 | 还原 current、launcher、owner、单元及 source；失败留日志 | 同样还原文件，但保留本次启动策略；再次失败仍可重试 |
+| complete / checked | 原只读最终化及人工入口通过 | 原链接身份/时间判定继续有效；不重装、不备份、不写 systemd |
+
+以下是**模拟跨启动模型**：单元测试模拟 boot/systemd，混合 smoke 模拟 boot ID 和单调时钟属性、操作真实 systemd 状态/链接；没有真实重启。不是所有发行版必然呈现的结果。
+
+| 事务开始时 | 模型新启动后 | 恢复及失败回滚 |
+|---|---|---|
+| enabled + active | enabled + active | 保留，不额外 start/stop/restart |
+| enabled + inactive | enabled + active | 不恢复旧 inactive，不 stop |
+| enabled-runtime + active | disabled + inactive | 不重新临时启用，不 start |
+| enabled-runtime + inactive | disabled + inactive | 不重新临时启用 |
+| disabled + active | disabled + inactive | 不重放手动 start |
+| disabled + inactive | disabled + inactive | 保持禁用/停止 |
+
+跨 boot 不只比较 boot_id：要求原持久链接身份未变、runtime 链接消失、当前状态符合策略，并验证 timer/timers.target 的本次原始激活/停止时间。可观察外部 stop、重启、重新建链接、mask、转换状态或证据缺失均留原日志，不覆盖用户操作。这些属性不能代替完整系统审计；被清除的历史、非标准启动顺序或身份变化必须人工诊断。
+
+首次安装独立处理：没有旧 timer 时完成原授权的默认 enabled+active；失败回滚仅停止/移除本次安装的自有 timer 和实际启用链接，避免无主链接。enable 已执行但其证据未落盘就重启时，持久链接变化不能自动归因，必须人工确认。已有版本升级的正常跨启动恢复/回滚不发 timer 生命周期变更命令。
+
+人工步骤见 README：私有保存原活动日志、核对当前状态/链接/日志，明确同意继续既定升级或回滚并保留当前策略，再把精确 SHA-256 交给可信源码中的既有恢复函数；Python `-I` 隔离导入、现有全局锁及 existing_only 均保留。未知 schema、坏哈希/来源/单元/步骤、外部链接仍拒绝。complete 必须走原 `finalize-program`；不能直接删除活动日志。审计副本是历史证据，不是活动事务，也不阻止正常菜单。
+
+### 本轮测试与安全核验
+
+**212 项单元测试通过，0 failure/error/skip**，比 198 项基线新增 14 个方法。新增方法包含六状态 × 16 边界 × 相同/不同 boot 共 **192 个子场景**（含 checked complete）；15 个非 complete 边界各测 boot 不可读/缺失、context/step 损坏，以及外部 stop/链接替换/mask/转换/时间异常；各阶段再次失败与重试、重复恢复/再次模拟重启、跨启动前向失败回滚、原 source 精确字节还原、首次安装各步骤/无主链接、v1/2/3 精确摘要人工迁移及不能绕过的安全检查。
+
+**11 条 smoke 命令全部退出 0**，系统级操作只在已确认无 NodePilot 的可销毁 Debian 13 amd64 WSL，彼此串行：
+
+| 工具 | 本轮结果与证据边界 |
+|---|---|
+| recovery_smoke | v0.3 与基准 587de90 两个旧版本 × 六状态 × intent/reloaded/rollback-launcher，共 **36 组**。真实文件/链接/systemd 状态，模拟 boot ID 和四项单调时钟值；产品恢复不发 timer 生命周期命令，重复恢复无操作。 |
+| recovery_smoke --manual-only | 两个旧版本 × installing/rolling_back，共 **4 组**。真实运行 README 的隔离 Python/精确摘要人工命令；缺历史 boot 的自动恢复拒绝且原日志字节不变，人工后保留当前策略。 |
+| program_smoke | 两个旧版本 × 六状态 × 成功/失败/中断，共 **36 组真实同 boot systemd**，首次安装成功/失败另 **2 组**。 |
+| bootstrap_smoke | v0.3/RC3/587de90 三基线 × intent/current/checked，共 **9 组**；旧 RC4 实际拒绝 v4，完整安装器 PTY 恢复与重复执行通过。 |
+| complete_smoke | 六状态严格只读/人工确认共 **12 组真实 systemd**；没有重启。 |
+| install_smoke（2 条）/ source_smoke / upgrade_smoke | 安装、旧 v0.3、stdin/TTY、重复升级、来源确认与拒绝、旧三节点配置/URI/metadata/监听通过。 |
+| service_smoke | 三协议真实服务、失败回滚与单节点删除隔离；绑定成功/拒绝时节点 PID、配置、URI、监听不变（Release API 使用夹具）。 |
+| http_family_smoke | 本地高端口 Caddy IPv4/IPv6/双栈 HTTP 与 PID 所有权通过，不代表公网 IPv6/HTTP-01。 |
+
+主要可复现命令（旧基线是从可信 Git 修订归档的忽略目录，不上传）：
+
+```bash
+python3 -m unittest discover -s tests -v
+bash -n install.sh
+.test-tools/shellcheck/extracted/usr/bin/shellcheck install.sh
+python3 nodepilot self-check
+python3 tools/native_check.py --download
+python3 tools/mihomo_check.py --download
+python3 tools/recovery_smoke.py --disposable --legacy-source .test-tools/legacy-source --legacy-source .test-tools/rc4-source-v3
+python3 tools/recovery_smoke.py --disposable --manual-only --legacy-source .test-tools/legacy-source --legacy-source .test-tools/rc4-source-v3
+python3 tools/program_smoke.py --disposable --legacy-source .test-tools/legacy-source --legacy-source .test-tools/rc4-source-v3
+python3 tools/bootstrap_smoke.py --disposable --legacy-source .test-tools/legacy-source --legacy-source .test-tools/rc3-source --legacy-source .test-tools/rc4-source-v3
+python3 tools/complete_smoke.py --disposable --legacy-source .test-tools/legacy-source
+python3 tools/install_smoke.py
+python3 tools/install_smoke.py --legacy-source .test-tools/legacy-source
+python3 tools/source_smoke.py --disposable
+python3 tools/upgrade_smoke.py --legacy-app .test-tools/legacy-source
+python3 tools/service_smoke.py
+python3 tools/http_family_smoke.py
+```
+
+中间失败如实保留：旧断言预期子版本 3、旧模拟 runtime 链接目录未接入新预检，调整测试后全量通过。首次混合 smoke 的首个产品恢复已成功，但旧测试清理误将有意保留的审计副本当作未清空；改为测试专用的路径/owner/普通文件/大小/摘要/schema 全量预检后清理，再从头跑完全部矩阵。生产卸载未改变，最终批次无失败。
+
+Xray **26.3.27**、sing-box **1.14.3**、Caddy **2.11.7** 的下载校验/ELF/版本和 **8 项原生配置检查**通过；Mihomo **1.19.32** 三协议导出原生解析通过。ShellCheck **0.10.0**、bash 语法、自检、Python 编译及 diff 检查通过。服务 smoke 观测三协议合计空闲 RSS **124040 KiB**，这是 WSL 上的进程观测，不是 1c/256MiB 整机性能验收。本次只增加标准库短时检查和有界日志/目录观察，无新依赖/常驻进程。
+
+最终清理核验通过：安装目录、状态目录、命令、续期单元、持久和 runtime 启用链接均不存在，systemd 无加载的 NodePilot 单元，`/var/lib/nodepilot-*-test-*` 无残留。Windows/Linux 可复现打包摘要一致，源安装器与 dist 安装器逐字节一致；仅管理入口和标准库模块进入 payload，私有日志、内核与测试目录不进入包。
+
+聚焦审查确认：活动日志最后删除，回滚失败保留；严格所有权/路径/来源/候选验证；管理入口沿用现有全局 flock，不需修改 manager；prepare 不执行半复制候选；complete 只读规则未变；恢复不操作外部 Xray/sing-box/Caddy，也不为 timer 重启代理节点。首次安装失败的自有 timer 清理与既有 timer 策略分开。无全局防火墙、路由、IPv6、swap、sysctl 变更。该范围未发现新增未修复的明确 P0/P1/P2；不能据此宣称全项目没有缺陷。
+
+### 发布判断与未完成验收
+
+**真实虚拟机整机 reboot：未执行；公网 VPS reboot：未执行。** Mock boot ID/时间、单元测试和 WSL 真实 systemd 分别陈述，没有授权可销毁真实重启环境，不将上述结果写成整机重启成功。
+
+仍未完成：真实 Cloudflare DNS-01 创建/传播/故障清理、Staging/正式签发与自动续期、部分公网 IPv6、Ubuntu/arm64 及发行版矩阵、1c/256MiB 整机/长期负载、客户端 GUI，以及真实重启时节点监听与续期行为。前轮 Caddy/stability/adoption 完整工具证据仍为历史，本轮没有把未重跑的历史结果算入 11 条命令。
+
+**建议冻结功能和本轮修复代码，进入 v0.4.0 最终发布验收；保留 RC4 草稿，尚不建议正式 Release。** 本地候选 SHA-256：`22e073c8622e39f2868c2fb4eb3fdb9ff546805e6515bf673ece0fff19c33573`。产物、测试内核及原始日志仅在忽略目录，不上传凭据或运行数据；公网 Release 附件仍未发布。

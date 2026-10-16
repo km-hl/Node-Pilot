@@ -5,6 +5,8 @@ Unlike unit tests this invokes actual systemctl, inspects /etc and /run links,
 and uses trusted legacy installers. Requires an explicitly disposable Linux host.
 """
 import argparse
+import hashlib
+import re
 import shutil
 import sys
 import tempfile
@@ -16,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 from nodepilot_pkg import deploy
 from nodepilot_pkg.common import PilotError, read_json, root_required, run
 from nodepilot_pkg.installation import TIMER, remove_program_files, timer_state, uninstall
-from nodepilot_pkg.manager import Manager, OWNER
+from nodepilot_pkg.manager import Manager, OWNER, LEGACY_OWNER
 from tools.install_smoke import tty_command
 from tools.package import package
 
@@ -53,7 +55,28 @@ def cleanup():
             assert not PATHS[3].exists() and not PATHS[4].exists()
             remove_program_files(PATHS[0])
         shutil.rmtree(m.state)
+    cleanup_test_history()
     require_empty()
+
+
+def cleanup_test_history():
+    """Disposable-test cleanup only; production uninstall retains audit evidence."""
+    root=Path('/opt/nodepilot')
+    if not root.exists():return
+    assert root.resolve()==root and not root.is_symlink()
+    marker=root/'.owner'
+    assert not marker.is_symlink() and marker.read_text() in {OWNER,LEGACY_OWNER}
+    histories=[]
+    for path in root.iterdir():
+        if path.name=='.owner':continue
+        match=re.fullmatch(r'program-pending-v[1-4]-([0-9a-f]{16})\.json',path.name)
+        assert match and not path.is_symlink() and path.is_file() and path.stat().st_size<=256*1024
+        assert hashlib.sha256(path.read_bytes()).hexdigest().startswith(match[1])
+        record=read_json(path)
+        deploy.validate_record(record,root,Path('/usr/local/bin/nodepilot'),Path('/etc/systemd/system'),Manager(migrate_owner=False))
+        histories.append(path)
+    for path in histories:path.unlink()
+    marker.unlink();root.rmdir()
 
 
 def links(expected):

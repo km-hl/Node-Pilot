@@ -144,7 +144,7 @@ nodepilot bind-source owner/repo --confirm
 
 `complete` 活动事务表示安装步骤已提交。恢复时会只读验证 current、目标哈希/必要模块、owner、launcher、单元、timer 和来源；一致后仅删除活动日志，保留历史证据。任一项目不符则保留日志并报告具体不一致，不靠重新安装或强行启用 timer 掩盖问题。
 
-新程序事务使用 `transaction_version=3`，保存开始/提交时 boot_id、原 timer 策略、complete 实际 timer 状态及 `/etc`、`/run` 启用链接的目标/inode/时间信息。旧 RC3/RC4 管理器明确拒绝子版本 3。本版继续读取 RC2 合法 installing 日志及子版本 1/2 的 preparing/installing/rolling_back/complete；旧日志不强制补造启动证据，旧 complete 保持原状态严格校验。升级中断应使用可信收尾版 RC4 或更新源码安装器。已安装的旧 v0.3 入口仍无法追溯加固。
+新程序事务使用 `transaction_version=4`。版本 3 只在 complete 保存链接证据，无法安全恢复非 complete 的旧启动状态；只添加可忽略字段会让旧管理器继续重放旧快照，因此需要新子版本明确拒绝旧管理器。外层 owner/schema、节点格式和 RC4 版本不变。版本 4 增加有界 `timer_context`（boot_id、两项状态、链接快照和 original/preserve/install 模式），保留不可变的 previous 原快照及 complete 证据。本版兼容 RC2 合法 installing、子版本 1/2/3/4；旧 complete 规则不变，缺失历史证据的非 complete 日志仍可按下述人工路径恢复，不伪造 boot_id 或删除原日志。升级中断应使用可信最新 RC4 源码安装器；旧 RC3/RC4 会拒绝版本 4，已安装旧 v0.3 入口仍无法追溯加固。
 
 ### complete 跨重启与人工核对
 
@@ -161,6 +161,41 @@ enabled 的 timer 必须不晚于 timers.target 首次进入 active，且二者�
 5. 成功后再进入 `nodepilot` 菜单，确认节点监听和证书续期策略；没有真实连接验证时仍不能宣称节点联通。
 
 此恢复路径适用于无 boot_id 的合法旧 complete 记录。若当前 timer 被 masked 或处于转换/未知状态，仍拒绝自动或人工最终化；由操作者明确处理后再核对。活动 preparing/installing/rolling_back 只能走原有可信安装器恢复，不能用人工确认跳过升级。完整主机重启与各发行版验证状态见 [RC4 验证报告](docs/RC_FOUR_VALIDATION.md)。
+
+### 非 complete 事务跨重启恢复
+
+preparing、installing、rolling_back 使用同一只读 timer 预检。已确认同一启动周期时保持原 RC4 的启用/运行状态恢复语义；持久化的 timer-intent、timer 和回滚检查点记录本项目操作范围。相邻检查点允许自身尚未落盘的单步写入，但不接受与阶段矛盾的 current、owner、launcher、单元或来源，不执行未完成复制或哈希不符的候选。
+
+跨启动时复用 complete 的持久链接身份、runtime 链接消失及 systemd 启动时间判定。安全通过后，将**本次启动已经观察到的策略**持久化为 preserve，成功恢复与失败回滚均不再调用 restore_timer 重放旧值：enabled+inactive 可在新启动变成 enabled+active；enabled-runtime 的 active/inactive、disabled+active 均可变为 disabled+inactive。后续恢复即使仍在同一次新启动，也继续保留这份策略；再次重启须重新验证。程序文件可按升级/回滚需要写入及 daemon-reload，但不因此重启代理节点。
+
+首次安装没有旧 timer，属于单独分支：未完成部署仍按原授权完成默认 enabled+active；失败时只清理本次创建的续期单元和链接。清理会必要地停止这个**尚未安装成功的自有 timer**，不操作原有或外部 timer。若 enable 已完成但证据尚未落盘就重启，不能确认链接由谁创建，会保留日志等待人工核对。preparing 回滚不执行不完整候选；已有版本升级的正常跨启动恢复/回滚不发 timer enable/start/stop/disable。
+
+旧版本 1/2 缺少 boot_id，或版本 3 跨启动但没有原链接快照时，默认保留日志并拒绝猜测；版本 3 仍可在已证明同一启动时按原规则恢复。RC2 本就没有旧 timer 快照，仅保留其原始证据并观察当前策略，不将观察时 boot_id 冒充事务开始 boot_id。迁移或跨启动重新确定策略前，在 root 私有目录保留带原日志 SHA-256 前缀的 `program-pending-vN-<摘要>.json`；只有 program-pending.json 是活动日志，审计副本不阻止正常管理，生产卸载也不自动删除它们。
+
+若因缺证据、重启后用户主动操作而无法自动恢复：
+
+1. 停止其他管理操作，私有复制活动日志，核对其 phase/step、current、owner、launcher、原/目标单元、来源、timer 状态/启用链接与本次启动日志。沿用上节只读 systemctl/journalctl 检查；当前策略原因不明时保留记录继续诊断。
+2. 明确同意**继续日志中既定的升级或回滚，并保留已核对的当前 timer 策略**，计算并手工核对活动日志 SHA-256。preparing 将回滚准备工作，installing 将继续已校验候选，rolling_back 将继续原回滚；这不是把它标成 complete，也不跳过文件、所有权、来源或原生候选检查。
+3. 使用已审查的本轮源码，在隔离 Python 导入和现有全局锁内调用既有恢复函数；将下面两个参数替换为可信源码绝对路径及已核对摘要，不自动取“最新摘要”代替确认：
+
+```bash
+sudo python3 -I - /root/Node-Pilot-trusted '已核对的64位日志SHA256' <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve(strict=True)))
+from nodepilot_pkg.common import root_required
+from nodepilot_pkg.manager import Manager
+from nodepilot_pkg.deploy import recover_program
+root_required()
+manager = Manager(migrate_owner=False)
+with manager.locked(migrate_owner=False, existing_only=True):
+    recover_program(manager=manager, reviewed_timer=sys.argv[2])
+PY
+```
+
+4. 若恢复的是旧候选，再用同一可信最新 RC4 源码执行 `bash install.sh --local --upgrade` 部署当前修复后进入菜单，核对节点监听与续期策略。没有实际连通验证时不声称节点联通。
+
+此参数仅接受精确活动日志摘要和受支持的当前 timer/标准自有链接。masked、转换状态、外部链接、坏 schema/检查点、候选哈希/来源/文件不符仍拒绝，原活动日志保留。人工确认后再次中断且证据不足时，需要重新核对新摘要；回滚失败继续保留 rolling_back，不报已完全恢复。complete 仍只能使用原有 finalize-program，只读、不重装、不新增备份。真实整机重启结果与模拟结果分开记录。
 
 ## 客户端
 

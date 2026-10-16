@@ -347,7 +347,8 @@ class ProgramRecoveryTests(unittest.TestCase):
                     systemd.enable('enabled')
                     failed=True;raise PilotError('injected installed self-check failure')
                 return systemd(args,**kwargs)
-            with patch('nodepilot_pkg.deploy.supported'),patch('nodepilot_pkg.deploy.run',side_effect=command),self.assertRaises(PilotError):
+            with patch('nodepilot_pkg.deploy.supported'),patch('nodepilot_pkg.deploy.run',side_effect=command), \
+                 patch('nodepilot_pkg.installation.RUNTIME_UNITS',systemd.links['enabled-runtime'].parent.parent),self.assertRaises(PilotError):
                 deploy(source,'b'*64,root=root,launcher=launcher,units=units,manager=m)
             self.assertEqual((app/'current').resolve(),old)
             self.assertEqual((root/'.owner').read_text(),LEGACY_OWNER)
@@ -921,6 +922,271 @@ class RebootCompleteTests(unittest.TestCase):
                     else:
                         review_complete(m,digest,root,launcher,units)
                         self.assertFalse((m.state/'acme').exists());self.assertFalse(journal.exists())
+
+
+@unittest.skipUnless(os.name=='posix','non-complete boot recovery')
+class NonCompleteBootTests(unittest.TestCase):
+    environment=ProgramRC3Tests.environment
+    recover=ProgramRC3Tests.recover
+    reboot=RebootCompleteTests.reboot
+    boot_before=RebootCompleteTests.boot_before
+    boot_after=RebootCompleteTests.boot_after
+    stages=('intent','candidate','current','owners','launcher','units','reloaded',
+            'timer-intent','timer','rollback','rollback-current','rollback-launcher',
+            'rollback-units','rollback-reloaded','rollback-timer','checked')
+
+    def install(self,env):
+        from nodepilot_pkg.deploy import deploy
+        root,launcher,units,m,source,sd=env
+        with patch('nodepilot_pkg.deploy.supported'),patch('nodepilot_pkg.deploy.run',side_effect=sd), \
+             patch('nodepilot_pkg.installation.RUNTIME_UNITS',sd.links['enabled-runtime'].parent.parent):
+            deploy(source,'b'*64,root=root,launcher=launcher,units=units,manager=m,confirm_source_change=lambda old,new:True)
+
+    def interrupted(self, base, enabled='disabled', active='active', step='candidate', first=False, source_before=None):
+        from nodepilot_pkg import deploy
+        env=self.environment(base,enabled,active,first);root,launcher,units,m,source,sd=env
+        if source_before is not None:(root/'source.json').write_bytes(source_before)
+        writer=deploy.atomic_json;command=sd.__call__
+        def crash(path,record):
+            writer(path,record)
+            if path.name=='program-pending.json' and record.get('step')==step:
+                raise SystemExit('durable boundary interruption')
+        def fail(args,**kwargs):
+            if step.startswith('rollback') and str(args[0])=='python3' and (root/'app/current').is_symlink() and (root/'app/current').resolve().name=='b'*64:
+                raise PilotError('force rollback')
+            return command(args,**kwargs)
+        with patch('nodepilot_pkg.installation.boot_id',return_value=self.boot_before), \
+             patch('nodepilot_pkg.deploy.atomic_json',side_effect=crash), \
+             patch.object(TimerSystemd,'__call__',side_effect=fail),self.assertRaises(SystemExit):
+            self.install(env)
+        self.assertTrue((root/'program-pending.json').exists())
+        sd.calls.clear()
+        return env
+
+    def resume(self,env,boot=None,reviewed=None):
+        from nodepilot_pkg.deploy import recover_program
+        root,launcher,units,m,source,sd=env
+        with m.locked(migrate_owner=False),patch('nodepilot_pkg.installation.boot_id',return_value=boot), \
+             patch('nodepilot_pkg.installation.RUNTIME_UNITS',sd.links['enabled-runtime'].parent.parent), \
+             patch('nodepilot_pkg.deploy.run',side_effect=sd):
+            result=recover_program(root,launcher,units,m,reviewed_timer=reviewed)
+            self.assertFalse(recover_program(root,launcher,units,m))
+            return result
+
+    def assert_no_timer_mutation(self,env):
+        self.assertFalse([c for c in env[-1].calls if c[:2] in [
+            ['systemctl',x] for x in ('start','stop','enable','disable','restart')]])
+
+    def test_same_and_changed_boot_all_stages_all_six_states(self):
+        for rebooted in (False,True):
+            for enabled,active in ProgramRC3Tests.states:
+                for step in self.stages:
+                    with self.subTest(rebooted=rebooted,enabled=enabled,active=active,step=step),tempfile.TemporaryDirectory() as d:
+                        env=self.interrupted(Path(d),enabled,active,step);root,launcher,units,m,source,sd=env
+                        if rebooted:self.reboot(env)
+                        expected=sd.state();sd.calls.clear()
+                        self.assertTrue(self.resume(env,self.boot_after if rebooted else self.boot_before))
+                        self.assertEqual(sd.state(),expected)
+                        self.assert_no_timer_mutation(env)
+                        rolled=step=='intent' or step.startswith('rollback')
+                        self.assertEqual((root/'app/current').resolve().name,('a' if rolled else 'b')*64)
+                        self.assertEqual((m.state/'user-config').read_text(),'preserved')
+                        self.assertFalse((root/'program-pending.json').exists())
+                        if rolled:
+                            self.assertEqual((root/'.owner').read_text(),LEGACY_OWNER)
+                            self.assertEqual((m.state/'.owner').read_text(),LEGACY_OWNER)
+                            self.assertEqual(launcher.read_text(),__import__('nodepilot_pkg.installation',fromlist=['LAUNCHER']).LAUNCHER)
+                            self.assertFalse((root/'source.json').exists())
+                        if step=='intent':self.assertFalse(any(c[0]=='python3' for c in sd.calls))
+
+    def test_unknown_boot_and_corrupt_records_leave_original_bytes_every_stage(self):
+        for step in self.stages[:-1]:
+            for mode in ('unreadable','missing','context','step'):
+                with self.subTest(step=step,mode=mode),tempfile.TemporaryDirectory() as d:
+                    env=self.interrupted(Path(d),step=step);journal=env[0]/'program-pending.json';r=read_json(journal)
+                    if mode=='missing':r['timer_context']['boot_id']=None
+                    elif mode=='context':r['timer_context']['links']={}
+                    elif mode=='step':r['step']='unknown'
+                    atomic_json(journal,r);before=journal.read_bytes()
+                    with self.assertRaises(PilotError):self.resume(env,None if mode=='unreadable' else self.boot_after)
+                    self.assertEqual(journal.read_bytes(),before);self.assert_no_timer_mutation(env)
+
+    def test_external_post_boot_timer_changes_never_reconciled_at_any_stage(self):
+        for step in self.stages[:-1]:
+            for mode in ('stop','links','masked','transition','time'):
+                with self.subTest(step=step,mode=mode),tempfile.TemporaryDirectory() as d:
+                    env=self.interrupted(Path(d),'enabled','active',step);self.reboot(env);sd=env[-1]
+                    if mode=='stop':sd.active='inactive'
+                    elif mode=='links':sd.links['enabled'].unlink();sd.enable('enabled')
+                    elif mode=='time':sd.stamps[('nodepilot-renew.timer','ActiveEnterTimestampMonotonic')]=30
+                    original=sd.__call__
+                    def masked(args,**kw):
+                        if mode=='masked' and 'UnitFileState' in args:return 'masked'
+                        if mode=='transition' and 'ActiveState' in args:return 'activating'
+                        return original(args,**kw)
+                    journal=env[0]/'program-pending.json';before=journal.read_bytes()
+                    with patch.object(TimerSystemd,'__call__',side_effect=masked),self.assertRaises(PilotError):self.resume(env,self.boot_after)
+                    self.assertEqual(journal.read_bytes(),before);self.assert_no_timer_mutation(env)
+
+    def test_cross_boot_forward_failure_rolls_back_files_but_preserves_this_boot_timer(self):
+        from nodepilot_pkg import deploy
+        for enabled,active in ProgramRC3Tests.states:
+            with self.subTest(enabled=enabled,active=active),tempfile.TemporaryDirectory() as d:
+                env=self.interrupted(Path(d),enabled,active,'candidate');root,launcher,units,m,source,sd=env;self.reboot(env)
+                original=sd.__call__;expected=sd.state()
+                def failure(args,**kw):
+                    if str(args[0])=='python3' and (root/'app/current').resolve().name=='b'*64:raise PilotError('new self-check failed')
+                    return original(args,**kw)
+                with patch.object(TimerSystemd,'__call__',side_effect=failure),self.assertRaises(PilotError):self.resume(env,self.boot_after)
+                self.assertEqual((root/'app/current').resolve().name,'a'*64)
+                self.assertEqual((root/'.owner').read_text(),LEGACY_OWNER)
+                self.assertEqual((m.state/'.owner').read_text(),LEGACY_OWNER)
+                self.assertEqual(sd.state(),expected);self.assert_no_timer_mutation(env)
+                self.assertFalse((root/'program-pending.json').exists())
+                self.assertFalse((root/'source.json').exists())
+
+    def test_repeat_reboot_rebases_again_and_rollback_failure_retains_phase(self):
+        from nodepilot_pkg import deploy
+        with tempfile.TemporaryDirectory() as d:
+            env=self.interrupted(Path(d),'enabled-runtime','active','candidate');self.reboot(env)
+            original=deploy.checkpoint
+            def crash(path,r,step):
+                original(path,r,step)
+                if step=='current':raise SystemExit('second recovery interrupted')
+            with patch('nodepilot_pkg.deploy.checkpoint',side_effect=crash),self.assertRaises(SystemExit):self.resume(env,self.boot_after)
+            r=read_json(env[0]/'program-pending.json');self.assertEqual(r['timer_context']['mode'],'preserve')
+            self.reboot(env)
+            self.assertTrue(self.resume(env,'33333333-3333-4333-8333-333333333333'));self.assert_no_timer_mutation(env)
+        with tempfile.TemporaryDirectory() as d:
+            env=self.interrupted(Path(d),step='rollback-current');self.reboot(env);journal=env[0]/'program-pending.json'
+            with patch('nodepilot_pkg.deploy.restore_file',side_effect=OSError('disk failed')),self.assertRaises(OSError):self.resume(env,self.boot_after)
+            self.assertEqual(read_json(journal)['phase'],'rolling_back')
+            self.assertTrue(self.resume(env,self.boot_after));self.assert_no_timer_mutation(env)
+
+    def test_first_install_before_and_after_timer_commit_reboot_and_cleanup(self):
+        for step in ('intent','candidate','current','owners','launcher','units','reloaded','timer-intent','timer','checked'):
+            with self.subTest(step=step),tempfile.TemporaryDirectory() as d:
+                env=self.interrupted(Path(d),active='inactive',step=step,first=True);self.reboot(env)
+                self.assertTrue(self.resume(env,self.boot_after))
+                if step=='intent':
+                    self.assertFalse((env[0]/'app/current').exists());self.assertFalse(any(p.is_symlink() for p in env[-1].links.values()))
+                else:self.assertEqual(env[-1].state(),{'unit_file_state':'enabled','active_state':'active'})
+
+    def test_old_v1_v2_v3_cross_boot_requires_exact_manual_ack_without_timer_writes(self):
+        for version in (1,2,3):
+            for stage in ('intent','candidate','rollback-current'):
+                with self.subTest(version=version,stage=stage),tempfile.TemporaryDirectory() as d:
+                    env=self.interrupted(Path(d),'enabled-runtime','active',stage);journal=env[0]/'program-pending.json';r=read_json(journal)
+                    r['transaction_version']=version;r.pop('timer_context')
+                    if version<3:r['previous'].pop('boot_id')
+                    atomic_json(journal,r);self.reboot(env);before=journal.read_bytes()
+                    with self.assertRaises(PilotError):self.resume(env,self.boot_after)
+                    self.assertEqual(journal.read_bytes(),before)
+                    with self.assertRaises(PilotError):self.resume(env,self.boot_after,reviewed='0'*64)
+                    self.assertEqual(journal.read_bytes(),before)
+                    digest=hashlib.sha256(before).hexdigest()
+                    self.assertTrue(self.resume(env,self.boot_after,reviewed=digest))
+                    self.assertEqual(env[-1].state(),{'unit_file_state':'disabled','active_state':'inactive'})
+                    self.assert_no_timer_mutation(env)
+
+    def test_manual_ack_cannot_bypass_candidate_source_units_or_step_corruption(self):
+        for mode in ('hash','source','unit','current','step','alias'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as d:
+                env=self.interrupted(Path(d),step='units');root,launcher,units,m,source,sd=env;self.reboot(env)
+                if mode=='hash':(root/'app'/('b'*64)/'nodepilot').write_text('corrupt')
+                elif mode=='source':atomic_json(root/'source.json',{'repository':'foreign/project'})
+                elif mode=='unit':(units/'nodepilot-renew.timer').write_text('foreign')
+                elif mode=='current':(root/'app/current').unlink();(root/'app/current').symlink_to('a'*64)
+                elif mode=='alias':
+                    p=units/'other.target.wants/nodepilot-renew.timer';p.parent.mkdir();p.symlink_to(units/'nodepilot-renew.timer')
+                else:
+                    r=read_json(root/'program-pending.json');r['step']='unknown';atomic_json(root/'program-pending.json',r)
+                journal=root/'program-pending.json';before=journal.read_bytes();digest=hashlib.sha256(before).hexdigest()
+                with self.assertRaises(PilotError):self.resume(env,self.boot_after,reviewed=digest)
+                self.assertEqual(journal.read_bytes(),before);self.assert_no_timer_mutation(env)
+
+    def test_first_install_cross_boot_failure_and_rollback_interruption_remove_only_owned_timer(self):
+        for step in ('candidate','units','timer','rollback','rollback-current','rollback-launcher',
+                     'rollback-timer-cleanup','rollback-units','rollback-reloaded','rollback-timer'):
+            with self.subTest(step=step),tempfile.TemporaryDirectory() as d:
+                env=self.interrupted(Path(d),active='inactive',step=step,first=True);root,launcher,units,m,source,sd=env
+                self.reboot(env);command=sd.__call__
+                def fail(args,**kw):
+                    if not step.startswith('rollback') and str(args[0])=='python3' and (root/'app/current').is_symlink():
+                        raise PilotError('first install failed after reboot')
+                    return command(args,**kw)
+                if step.startswith('rollback'):self.assertTrue(self.resume(env,self.boot_after))
+                else:
+                    with patch.object(TimerSystemd,'__call__',side_effect=fail),self.assertRaises(PilotError):self.resume(env,self.boot_after)
+                self.assertFalse((root/'app/current').is_symlink());self.assertFalse(launcher.exists())
+                self.assertFalse((root/'program-pending.json').exists())
+                self.assertFalse(any(p.is_symlink() for p in sd.links.values()))
+                self.assertFalse((units/'nodepilot-renew.timer').exists())
+                self.assertEqual((m.state/'user-config').read_text(),'preserved')
+
+    def test_uncheckpointed_first_enable_after_reboot_requires_manual_review(self):
+        with tempfile.TemporaryDirectory() as d:
+            env=self.interrupted(Path(d),active='inactive',step='timer-intent',first=True);sd=env[-1]
+            sd.enable('enabled');sd.active='active'  # enable returned, checkpoint never persisted.
+            self.reboot(env);journal=env[0]/'program-pending.json';before=journal.read_bytes()
+            with self.assertRaises(PilotError):self.resume(env,self.boot_after)
+            self.assertEqual(journal.read_bytes(),before);self.assert_no_timer_mutation(env)
+            self.assertTrue(self.resume(env,self.boot_after,reviewed=hashlib.sha256(before).hexdigest()))
+            self.assert_no_timer_mutation(env)
+
+    def test_manual_unknown_boot_failure_can_roll_back_in_the_same_authorized_call(self):
+        with tempfile.TemporaryDirectory() as d:
+            env=self.interrupted(Path(d),step='candidate');root,launcher,units,m,source,sd=env
+            journal=root/'program-pending.json';r=read_json(journal);r['timer_context']['boot_id']=None;atomic_json(journal,r)
+            digest=hashlib.sha256(journal.read_bytes()).hexdigest();command=sd.__call__
+            def fail(args,**kw):
+                if str(args[0])=='python3' and (root/'app/current').resolve().name=='b'*64:raise PilotError('final check failed')
+                return command(args,**kw)
+            with patch.object(TimerSystemd,'__call__',side_effect=fail),self.assertRaises(PilotError):self.resume(env,None,reviewed=digest)
+            self.assertFalse(journal.exists());self.assertEqual((root/'app/current').resolve().name,'a'*64)
+            self.assert_no_timer_mutation(env)
+
+    def test_checkpoint_claims_cannot_override_valid_but_wrong_owned_files(self):
+        from nodepilot_pkg.installation import LEGACY_RENEW_TIMER
+        for mode in ('preparing','owner','launcher','unit','rollback'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory() as d:
+                stage={'preparing':'intent','owner':'owners','launcher':'launcher','unit':'units','rollback':'rollback-current'}[mode]
+                env=self.interrupted(Path(d),step=stage);root,launcher,units,m,source,sd=env
+                if mode=='preparing':(root/'app/current').unlink();(root/'app/current').symlink_to('b'*64)
+                elif mode=='owner':(m.state/'.owner').write_text(LEGACY_OWNER)
+                elif mode=='launcher':launcher.unlink()
+                elif mode=='unit':(units/'nodepilot-renew.timer').write_text(LEGACY_RENEW_TIMER)
+                else:(root/'app/current').unlink();(root/'app/current').symlink_to('b'*64)
+                journal=root/'program-pending.json';before=journal.read_bytes()
+                with self.assertRaises(PilotError):self.resume(env,self.boot_after)
+                self.assertEqual(journal.read_bytes(),before);self.assert_no_timer_mutation(env)
+
+    def test_recovery_fails_again_at_each_stage_keeps_rollback_intent_until_retry(self):
+        from nodepilot_pkg import deploy
+        for step in self.stages[:-1]:
+            with self.subTest(step=step),tempfile.TemporaryDirectory() as d:
+                env=self.interrupted(Path(d),step=step);self.reboot(env);journal=env[0]/'program-pending.json'
+                writer=deploy.checkpoint
+                def error(path,record,boundary):
+                    writer(path,record,boundary)
+                    raise OSError('recovery checkpoint I/O error')
+                with patch('nodepilot_pkg.deploy.checkpoint',side_effect=error),self.assertRaises((PilotError,OSError)):
+                    self.resume(env,self.boot_after)
+                self.assertEqual(read_json(journal)['phase'],'rolling_back')
+                self.assertEqual((env[3].state/'user-config').read_text(),'preserved')
+                self.assert_no_timer_mutation(env)
+                self.assertTrue(self.resume(env,self.boot_after))
+                self.assertEqual((env[0]/'app/current').resolve().name,'a'*64)
+                self.assert_no_timer_mutation(env)
+
+    def test_cross_boot_rollback_restores_exact_legacy_source_bytes(self):
+        before=b'{ "repository" : "old/project" }\n'
+        for step in ('intent','rollback-launcher','rollback-reloaded'):
+            with self.subTest(step=step),tempfile.TemporaryDirectory() as d:
+                env=self.interrupted(Path(d),step=step,source_before=before);self.reboot(env)
+                self.assertTrue(self.resume(env,self.boot_after))
+                self.assertEqual((env[0]/'source.json').read_bytes(),before)
+                self.assert_no_timer_mutation(env)
 
 
 @unittest.skipUnless(os.name=='posix','durable node revisions')

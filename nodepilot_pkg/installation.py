@@ -78,6 +78,35 @@ def timer_commit(units, command=run):
     return {'boot_id': boot_id(), 'timer': timer_state(command), 'links': timer_links(units)}
 
 
+def recovery_timer_context(units, command=run):
+    """Also represent an absent first-install timer, without inventing enablement."""
+    links = timer_links(units)
+    if not (Path(units) / TIMER).exists():
+        enabled = command(['systemctl', 'show', TIMER, '-p', 'UnitFileState', '--value'])
+        active = command(['systemctl', 'show', TIMER, '-p', 'ActiveState', '--value'])
+        if enabled not in {'', 'disabled'} or active not in {'', 'inactive'} or any(links.values()):
+            raise PilotError('缺失 timer 却存在启用/运行状态或链接；保留事务。')
+        state = {'unit_file_state':'disabled', 'active_state':'inactive'}
+    else:
+        state = timer_state(command)
+    return {'boot_id':boot_id(), 'timer':state, 'links':links}
+
+
+def verify_recovery_topology(context, units):
+    """Manual acknowledgement never grants control over aliases/external units."""
+    name = 'timers.target.wants/' + TIMER
+    for scope, links in context['links'].items():
+        directory = Path(units) if scope=='persistent' else RUNTIME_UNITS
+        for relative, info in links.items():
+            target = (directory/relative).parent / info['target']
+            if relative != name or target.resolve() != (Path(units)/TIMER).resolve():
+                raise PilotError('timer 存在非标准/外部启用链接；拒绝人工核对。')
+    p, r = (bool(context['links'][k]) for k in ('persistent','runtime'))
+    expected = 'enabled' if p else 'enabled-runtime' if r else 'disabled'
+    if context['timer']['unit_file_state'] != expected:
+        raise PilotError('timer 启用状态与链接不一致；保留事务。')
+
+
 def verify_timer_commit(commit, desired, units, command=run, reviewed=False):
     """Read-only proof; reboot alone never authorizes policy reconciliation."""
     observed = timer_state(command)
