@@ -1,6 +1,6 @@
 # 真正 VPS 上的第一阶段验收
 
-本清单并非全部通过；已完成的真实 Debian 13 检查见 [v0.1.0 报告](VPS_TEST_REPORT.md) 和 [v0.2.0 报告](CADDY_VALIDATION.md)。干净 Ubuntu/arm64、真实 ACME、完整 256MiB 整机与长测仍待执行。不要将配置与监听检查标为外网成功。
+本清单并非全部通过；最新授权 RC4 Debian 13 amd64 IPv4 公网/生命周期/进程组短测见 [VPS 报告文末](VPS_TEST_REPORT.md)，[v0.2.0 报告](CADDY_VALIDATION.md) 保留历史证据。干净安装/原程序升级、真实重启、完整系统/arm64/公网 IPv6/GUI、真实 ACME 及完整 256MiB 整机长测仍待执行。不要将配置与监听检查标为外网成功。
 
 1. 准备 1c/256MiB 实机，记录 `free -m`、架构、系统、已有服务和防火墙；另准备有 Caddy / Xray / sing-box 的测试机检查共存。
 2. 从真实发布 URL 执行单条安装命令。确认安装器校验项目包、选择节点时校验官方稳定内核并自动进入菜单。测试普通 SSH、`curl ... | bash` 和窄终端。
@@ -20,17 +20,17 @@
 
 ## RC4 最终验收执行顺序（待授权测试机）
 
-本节是计划，不是通过记录。仅使用明确授权且可销毁的 VPS、测试域名和最小权限 Token。现有生产机及其他项目凭据不在授权范围。已有 `tools/vps_smoke.py`、`client_probe.py`、`resource_probe.py` 等工具继续复用，不建立第二套验收框架。
+本节是完整计划；单机部分通过项以 VPS 报告为准，下面矩阵尚未整体通过。仅使用明确授权的测试范围、域名和最小权限 Token；既有业务必须保留，其他项目凭据不在授权范围。已有 `tools/vps_smoke.py`、`client_probe.py`、`resource_probe.py` 等工具继续复用，不建立第二套验收框架。
 
 ### 环境矩阵与记录
 
 | 维度 | 必须记录的实机组合 | 当前 RC4 状态 |
 |---|---|---|
-| 系统/架构 | Debian 12、13，Ubuntu 22.04、24.04；每系统 amd64/arm64，8 个基础组合 | 待验收；WSL/CI 不抵扣 |
-| 公网地址族 | 基础组合中覆盖 IPv4-only、IPv6-only、双栈；异常 IPv6 路由另测 | 待验收 |
-| 共存 | 独立 Xray/sing-box、3x-ui、系统 Caddy/Nginx TCP80/443、Docker 网站/反代与端口映射 | 待验收；操作前后保存配置哈希和状态 |
-| 内存 | 真实 1c/256MiB（记录 swap），三协议分别及同时运行、自建 Caddy、安装/升级/ACME 峰值 | 待验收；不得用 GOMEMLIMIT 或 cgroup 短测替代 |
-| 客户端 | 目标版本 Mihomo、sing-box、v2rayN、Egern，逐协议导入、验证证书、外网传输 | 待验收；记录不支持功能/版本 |
+| 系统/架构 | Debian 12、13，Ubuntu 22.04、24.04；每系统 amd64/arm64，8 个基础组合 | Debian 13 amd64 部分通过；干净安装/原程序升级及其他组合待验收 |
+| 公网地址族 | 基础组合中覆盖 IPv4-only、IPv6-only、双栈；异常 IPv6 路由另测 | IPv4 三协议已实连；公网 IPv6-only/双栈待验收 |
+| 共存 | 独立 Xray/sing-box、3x-ui、系统 Caddy/Nginx TCP80/443、Docker 网站/反代与端口映射 | 原 x-ui/Xray 保持、临时独立服务接管归还通过；Docker 无运行容器，网站/反代完整拓扑待验收 |
+| 内存 | 真实 1c/256MiB（记录 swap），三协议分别及同时运行、自建 Caddy、安装/升级/ACME 峰值 | 2GiB 实机 256MiB cgroup 短测通过；完整整机/长期/ACME 仍待验收 |
+| 客户端 | 目标版本 Mihomo、sing-box、v2rayN、Egern，逐协议导入、验证证书、外网传输 | sing-box 三协议、Xray Reality 公网通过；Mihomo 原生解析，GUI 仍待验收 |
 
 每个组合记录 commit、安装器和 payload SHA-256、OS/架构、内核/客户端版本、地址族、时间、阶段、返回码及脱敏结果。私有 URI/密钥/Token、原始日志留本机，公开报告只保存审核后的摘要。
 

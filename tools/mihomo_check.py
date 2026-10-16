@@ -19,12 +19,18 @@ from nodepilot_pkg.releases import release
 from nodepilot_pkg.system import architecture
 
 
+def asset_name(arch, tag):
+    # The unqualified amd64 build requires x86-64-v3; older VPS CPUs need v1.
+    target = 'amd64-v1' if arch == 'amd64' else arch
+    return f'mihomo-linux-{target}-{tag}.gz'
+
+
 def main():
     p=argparse.ArgumentParser();p.add_argument('--download',action='store_true');p.add_argument('--private-nodes',type=Path);args=p.parse_args()
     root=private_dir(ROOT/'.test-tools/mihomo');binary=root/'mihomo'
     if args.download:
         record=release('MetaCubeX/mihomo');tag=record['tag_name'];arch=architecture()
-        name=f'mihomo-linux-{arch}-{tag}.gz'
+        name=asset_name(arch,tag)
         assets=[a for a in record['assets'] if a['name']==name]
         if len(assets)!=1:raise PilotError('未找到官方对应架构的标准 Mihomo 附件。')
         with tempfile.TemporaryDirectory(prefix='download-',dir=root) as d:
