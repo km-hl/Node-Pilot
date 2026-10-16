@@ -590,3 +590,15 @@ python3 tools/adoption_smoke.py cleanup
 - 原 8 个关键文件摘要、原服务状态/MainPID、原 Xray PID 和程序 current 均保持。临时服务/监听/源码/内核/状态已清理，生成的私有备份与原始日志仅留服务器 root 私有 0600 压缩包，不上传公开仓库。候选管理器 payload 未修改，仍绑定上节摘要。
 
 本轮没有发现新的管理器 P0/P1；唯一新增代码修复为测试工具 CPU 附件兼容。建议继续冻结管理器并完成剩余验收，PR #1 保持 Draft。真实 ACME/续期/TXT 清理、真实 reboot、干净安装/原程序升级故障、其他系统/arm64/公网 IPv6、Docker 网站反代、GUI 客户端、256MiB 整机长期负载仍未完成，不建议现在合并 main 或正式发布 v0.4.0。
+
+## RC4 升级与真实 reboot 专项（2026-10-17）
+
+受测管理器仍为 `e4850d1bcca8f8ed483ff6f4f295666b133f9f70`，payload `645d116e5dd1ceceb4c7af3e5b372997e9de36010f9f29481e4bb46e5c2990ae`。用户本轮重新授权原 VPS 为可销毁测试环境；先保存原 NodePilot，再从正式 v0.3.0 Release 安装，三节点真实公网基线通过后按 `--local --upgrade` 升级 RC4。升级保留节点修订/配置/证书/URI/单元及运行 PID，状态 schema=2；没有使用不存在的 v0.4.0 Release。
+
+10 组真实整机 reboot 全部通过：enabled+active、disabled+inactive、enabled-runtime+active、disabled+active、enabled+inactive，以及 intent/reloaded/complete/回滚途中中断与节点 pending。每组实际 reboot、重新 SSH、新 boot ID、实际 socket/所有权和原配置摘要验证，再由独立客户端三协议公网数据/HTTPS 复核。complete 恢复前后程序文件 inode/mtime/摘要相同；合法事务恢复后再执行无 pending。私有注入器保留明确故障标记，没用假 boot ID/时钟替代重启。
+
+真实 404/SHA 不匹配/非 tar 安装包均被安装器拒绝；两种无效候选是明确加载/schema 夹具。官方 Xray 更新后实际端口冲突触发启动失败并回滚；Caddy 未知 app 配置夹具由真实原生 validate 拒绝，保留旧内核/配置。五项拒绝及内核失败后原三协议再次公网成功。本轮合计 42MiB 数据摘要通过；本地 Debian 254 项通过、VPS 最终 254 项通过（38.529秒），远端无 ShellCheck。详见 [分层矩阵、命令和限制](VPS_TEST_REPORT.md#rc4-程序升级与真实重启专项2026-10-17)。
+
+结束通过自有卸载事务清理测试安装后恢复原 v0.3.0/零节点、enabled+active timer，103 个记录文件摘要一致，x-ui/Docker 正常，测试单元/监听清理。外部 PID 因真实 reboot 改变，按文件完整性与状态核对；原始 journal/节点备份/日志保留 root 私有，不上传。
+
+未确认新的管理器 P0/P1，本轮仅更新文档、没有新增行为/依赖/协议，不更改 CHANGELOG。真实 ACME 尚未执行：缺授权域名/Zone/Token，服务器无 Certbot/global IPv6；未发起 DNS 修改或 CA 签发。固定正式 CA 的现有入口不能当作 Staging 开关。真实 CA/续期/TXT 清理/插件脱敏、干净 OS、正式 Release 下载升级、其他系统/arm64/公网 IPv6/GUI、256MiB 整机长测及安装/ACME 峰值仍待验收。**继续保留 PR #1 Draft，不合并或发布。**

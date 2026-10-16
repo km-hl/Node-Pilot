@@ -4,7 +4,7 @@
 
 轻量 VPS 节点搭建与管理工具，当前源码 `0.4.0` 候选。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
 
-**当前状态：RC4 三协议已在授权 Debian 13 amd64 VPS 上通过公网数据/HTTPS、错误认证、选站、回滚/恢复、Caddy 与原 x-ui 共存及受限资源短测。** 180 秒、256MiB 进程组峰值 166.2MiB，无 OOM；实际主机约 2GiB，不能当作 256MiB 整机长测。测试自签名证书显式导入信任，未关闭校验；真实 ACME、重启/原程序升级、完整环境与 GUI 矩阵仍待验证。详见 [真实 VPS 测试报告](docs/VPS_TEST_REPORT.md)、[本地记录](docs/VALIDATION.md) 和 [验收清单](docs/VPS_ACCEPTANCE.md)。
+**当前状态：RC4 已在授权 Debian 13 amd64 VPS 验证三协议公网连接、v0.3.0 正式安装到 RC4 本地升级、10 组真实整机 reboot/事务恢复及升级失败保留。** 本轮 42MiB 数据/HTTPS 与 254 项实机测试通过，原安装和 103 个文件摘要已恢复；详见 [升级与重启专项](docs/VPS_TEST_REPORT.md#rc4-程序升级与真实重启专项2026-10-17)。此前 180 秒、256MiB 进程组峰值 166.2MiB，无 OOM；实际主机约 2GiB，不能抵扣 256MiB 整机长测。测试自签证书显式导入信任，未关闭校验；真实 ACME、正式 v0.4.0 Release 下载、其他系统/架构/公网 IPv6 和 GUI 仍待验收。PR 继续 Draft。
 
 仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.3.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.3.0)。Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)，版本选择与接管实测见 [v0.3.0 验证记录](docs/MANAGEMENT_VALIDATION.md)。
 

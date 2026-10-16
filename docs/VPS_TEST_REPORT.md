@@ -121,3 +121,99 @@ AnyTLS/HY2 与 Caddy 的测试证书是明确标记的自签名证书；客户�
 结束前核对：8 个原关键文件摘要全部一致；原 x-ui/Docker/续期 timer 的运行、启用、加载路径及 MainPID 快照一致，原 Xray PID/可执行文件、NodePilot 0.3.0 current 指向及 0 节点状态保持。无本次 nodepilot 临时单元或监听残留；Caddy/接管/restore 临时状态已清理。主测试状态、源码及下载内核在核对目录归属后删除，生成的私有节点备份/日志压缩包仅保存在 root 专用目录，文件 0600；不公开上传。没有重启主机或操作全局网络策略。
 
 RC4 在此 Debian 13 amd64 IPv4/既有 x-ui 环境下的上述公网、生命周期与短测通过，补齐了此前仅本地验证的一部分。**继续保留 PR #1 Draft，不合并 main、不发布正式 v0.4.0**；仍须完成真实 ACME、重启/升级故障、系统/架构/公网 IPv6/GUI 和 256MiB 整机长期验收。没有据此次有限测试推断整个环境矩阵已通过。
+
+## RC4 程序升级与真实重启专项（2026-10-17）
+
+本节取代前文对“尚无升级/整机 reboot 证据”的当前判断，保留之前各轮的历史边界。用户在本轮明确重新授权原 VPS 进行可销毁测试、安装/升级/卸载、故障注入与多次整机 reboot；不是沿用上一轮共存测试授权。没有授权销毁云实例，也没有重装操作系统。
+
+### 环境、来源与证据边界
+
+- 受测源码：`e4850d1bcca8f8ed483ff6f4f295666b133f9f70`，远端开发分支相同；开始时 PR #1 OPEN/DRAFT，精确提交 CI 成功。管理器 payload SHA-256 仍为 `645d116e5dd1ceceb4c7af3e5b372997e9de36010f9f29481e4bb46e5c2990ae`。
+- Debian 13 amd64，1 CPU，MemTotal 2021232 KiB，公网 IPv4；沿用原 x-ui/Xray 与 Docker。**这是同一 VPS 上的全新 NodePilot 安装，不能当作干净 OS、其他系统、arm64 或 256MiB 整机证据。** 全局防火墙、IPv6、路由、DNS、swap、sysctl 均未调整。真实 ACME 域名/Zone/Token 尚未提供。
+- 原 NodePilot 0.3.0 为零节点、timer enabled + active。先将其程序、状态、启动器、续期单元保存为 root 私有压缩备份及原路径副本，再腾空精确的 NodePilot 安装路径；没有接管 x-ui/Docker。
+- 重新从 GitHub 正式 v0.3.0 Release 下载安装器，核对 API 附件 SHA-256：安装器 `a6517939811feff0dd4e8be7494ea671de8acdec81b999e67c610aeb0ec89992`，payload `8e1fc2bda9a1a0ab10444d134ef18c96b8d0085a6287b2f5132a5f928a0f0671`。实际安装入口继续下载并校验项目包，自动打开 PTY 菜单后正常退出。
+- 使用**实际安装的 v0.3.0 管理器**创建三节点，官方来源下载/校验 Xray 与 sing-box；第三方 Reality 为真实 TLS/CF 筛查后选中的目标。AnyTLS/HY2 使用测试自签证书，独立客户端显式导入 PEM，`insecure=0`，从未关闭 TLS 验证。这不属于真实 ACME。
+- 升级通过可信源码 `bash install.sh --local --upgrade`，明确确认从旧仓库绑定切换为本地来源。没有调用不存在的 v0.4.0 Release。升级后原 node.json、config.json、证书、URI、节点单元摘要及运行 PID 均相同；schema 所有权迁移为 2，原节点元数据仍可读。
+
+### ACME 验收矩阵
+
+| 项目 | 本轮真实结果 | 现有代码/本地证据与所缺条件 |
+|---|---|---|
+| Caddy HTTP-01 | 未执行 | 固定正式 LE Directory，TCP80 分族与占用拒绝已有本地证据；需要授权 A/AAAA 域名与公网80。自动续期、两正式证书目标及删除隔离不能由自签结果抵扣。 |
+| AnyTLS DNS-01 | 未执行 | 独立凭据/Certbot runner/原生配置已审查；缺测试域名、Zone ID、最小权限 Token。 |
+| HY2 DNS-01 | 未执行 | 同上；本轮自签 QUIC 实连不能证明 DNS-01 签发。 |
+| Reality 自建目标 DNS-01 | 未执行 | 使用 holder 与同一 Certbot 路径；仍缺真实 CA/Token。 |
+| 续期成功、失败保留旧修订 | 真实 CA 未执行 | 现有失败注入证据保持 Mock/systemd 标记；不能写成真实续期通过。 |
+| TXT 创建、传播、正常/中断清理 | 未执行 | 需先记录授权 Zone 的原 TXT，再按专属挑战名核对创建与清理；不能清理其他项目记录。 |
+| Token 的真实插件日志脱敏 | 未执行 | 独立 0600 文件、环境隔离及脱敏代码/夹具可检查，不能保证所有实际插件输出。 |
+
+当前 Certbot 命令、Caddy issuer 与其证书存储路径均固定正式 LE；没有现成安全的菜单 Staging 开关。下一轮先在隔离的测试配置/源码副本使用 [官方 Staging Directory](https://letsencrypt.org/docs/staging-environment/)（`https://acme-staging-v02.api.letsencrypt.org/directory`），同时显式配置可信 Staging 信任锚及对应存储路径，保留校验；不得只替换 issuer、关闭证书验证或把正式 CA 当无限重试环境。Staging 全部故障与清理通过后，再对授权域名有限正式签发，并单独验证系统信任链、SAN、私钥配对、服务装载和外部 HTTPS。
+
+### 升级与 reboot 矩阵
+
+| 场景 | 重启后的 timer | boot ID 前8位（前 → 后） | 结果 |
+|---|---|---|---|
+| 正常多节点，enabled + active | enabled + active | `c4393da1` → `b1c192d7` | 新启动周期、三协议监听/原配置/公网 HTTPS 均通过；重复恢复无 pending |
+| disabled + inactive | disabled + inactive | `b1c192d7` → `5dfbfbcc` | 新启动周期、三协议监听/原配置/公网 HTTPS 均通过；重复恢复无 pending |
+| enabled-runtime + active | disabled + inactive | `5dfbfbcc` → `db1f748b` | 新启动周期、三协议监听/原配置/公网 HTTPS 均通过；重复恢复无 pending |
+| disabled + 手动 start | disabled + inactive | `db1f748b` → `1a97804c` | 新启动周期、三协议监听/原配置/公网 HTTPS 均通过；重复恢复无 pending |
+| enabled + 手动 stop | enabled + active | `1a97804c` → `bf00c054` | 新启动周期、三协议监听/原配置/公网 HTTPS 均通过；重复恢复无 pending |
+| preparing/intent 中断，disabled | disabled + inactive | `bf00c054` → `b0a6962b` | 新启动周期、三协议监听/原配置/公网 HTTPS 均通过；重复恢复无 pending |
+| installing/reloaded 中断，enabled-runtime | disabled + inactive | `b0a6962b` → `725e2017` | 新启动周期、三协议监听/原配置/公网 HTTPS 均通过；重复恢复无 pending |
+| complete/checked 中断，enabled | enabled + active | `725e2017` → `68c76f3f` | 新启动周期、三协议监听/原配置/公网 HTTPS 均通过；重复恢复无 pending |
+| rolling_back/rollback-launcher 再中断，enabled-runtime | disabled + inactive | `68c76f3f` → `345d7789` | 新启动周期、三协议监听/原配置/公网 HTTPS 均通过；重复恢复无 pending |
+| 节点 pending 写入后中断，enabled | enabled + active | `345d7789` → `e6e668b5` | 新启动周期、三协议监听/原配置/公网 HTTPS 均通过；重复恢复无 pending |
+
+**10 组真实 RC4 reboot 全部通过**，含 4 组程序事务及 1 组节点 pending。complete 恢复前后程序/current/owner/来源/启动器/续期单元的摘要、inode、mtime 均相同，确认只读最终化。另有 1 次 v0.3 重启单独记录，不计入这 10 组。升级前、升级后、10 次 reboot 后及两批失败检查后，各三协议 1MiB，共 **42MiB** 数据完整性验证，并逐协议 HTTPS 正常校验。
+
+每次均真实执行 `systemctl reboot`，关闭旧 SSH、重新建立连接，核对新 boot ID；恢复后逐节点核对 MainPID 拥有的 TCP/UDP socket、原参数与文件摘要，从本地独立网络重新访问公网节点并验证数据和 HTTPS。没有用 boot ID 夹具、重启单个服务或 WSL 启动代替整机 reboot。事务故障由私有驱动在产品函数**真实写入并 fsync 后 `os._exit`**触发；它是明确的故障注入，证据中保留该标记，CA/网络/时钟没有用 Mock 替代。
+
+| 故障 | 实际方法与证据层级 | 结果 |
+|---|---|---|
+| 下载失败 | 真实 HTTPS 请求正式仓库内刻意不存在的附件，安装器返回 1 | 未部署；旧 current、节点、单元与 PID 不变 |
+| SHA-256 不匹配 | 真实下载 v0.3 附件，设置错误预期摘要；保持校验开启，返回 1 | 安全拒绝；旧状态不变 |
+| 安装包损坏/格式错误 | 官方安装器脚本作为刻意无效 payload，摘要正确、tar 原生解包拒绝，返回 1 | 未执行包内代码；旧状态不变 |
+| 新管理器加载失败 | 明确无效的候选模块夹具，真实版本/加载探测拒绝 | 旧程序与节点不变；不是发布版自身失败 |
+| 候选不兼容旧 schema | 要求 schema=99 的无效候选夹具，真实探测拒绝 | 旧状态不被迁移/覆盖；不是支持 schema 的真实缺陷 |
+| 升级异常退出、事务残留、回滚途中再退出 | 上述 4 组 durable journal + os._exit + 真实整机 reboot | 恢复完成且幂等，不强删 pending |
+| Xray 更新后启动失败 | 官方同版本重新下载/校验为新修订；真实停止后用 socket 占用测试节点端口，真实 systemd 启动失败 | 自动恢复旧内核修订，全部节点监听健康，原配置/URI 不变 |
+| Caddy 更新配置检查失败 | 官方同版本内核下载/校验；刻意注入未知 app 的配置夹具，由真实 Caddy validate 拒绝 | 原内核、配置和目标服务保留；临时自签目标随后删除 |
+| 未知/损坏恢复记录、外部 FragmentPath/drop-in | 现有 254 项单元/夹具及此前独立 systemd 证据；本轮未制造此类真实 reboot 故障 | 仅按已有证据层级记录，不能追加为本轮实机组数 |
+
+五项安装/候选拒绝后及两项内核失败后，均再由独立客户端用原分享参数完成三协议公网数据/HTTPS。没有执行未校验的内核，没有用假下载器冒充 HTTPS。两种无效程序和 Caddy 配置是明确的故障夹具，不宣称真实发布附件本身损坏。
+
+### 命令与复现边界
+
+以下命令只适用于明确授权的专用测试安装。先制作私有备份，保存 `sha256sum`、`systemctl show`、`ss -lntup`、`/proc/sys/kernel/random/boot_id`；禁止对未授权服务器照搬。私有 SSH 驱动只编排现有 `tty_command`、打包、Manager/deploy 和 `client_probe.py`，不进入产品安装包，也不包含凭据到公开仓库。
+
+```bash
+# 先校验 GitHub 正式 Release 安装器摘要，再执行；实际自动进入菜单。
+bash /path/to/verified-v0.3.0/install.sh
+# 可信候选源码的真实升级入口；来源变更明确输入 y。
+bash install.sh --local --upgrade
+systemctl show nodepilot-renew.timer -p UnitFileState -p ActiveState
+# 每项策略独立设置，分别保存 /etc、/run 启用链接；绝非全设 enabled。
+systemctl stop nodepilot-renew.timer
+systemctl disable nodepilot-renew.timer
+systemctl disable --runtime nodepilot-renew.timer
+# enabled 场景：enable + start；enabled-runtime：enable --runtime + start；
+# disabled+active：仅 start；enabled+inactive：仅 enable。
+cat /proc/sys/kernel/random/boot_id
+systemctl reboot
+# 新 SSH 会话再次读取 boot ID，用可信 RC4 恢复并再次执行验证幂等性。
+python3 tools/client_probe.py --private-dir /path/to/private-client-artifacts --https-check
+```
+
+合法程序中断复现：先用现有 `tools/package.py` 为可信候选副本计算真实 payload 摘要；私有驱动在 `deploy.checkpoint` 原函数成功返回后的 reloaded/checked/rollback-launcher 阶段终止进程，初始 intent 则在原 atomic_json 成功返回后终止（程序场景预期退出 77）。节点 pending 在原 `manager.atomic_json(pending.json, …)` 成功返回后终止（预期退出 78）。保存日志后 reboot，再在 `Manager(migrate_owner=False).locked(migrate_owner=False)` 内调用 `recover_program`、`recover_core`、`recover`，重复恢复并核对无 pending/节点漂移。除候选副本的测试注释和特意无效的加载夹具外，不改已审核管理器，绝不删除 pending 绕过恢复。
+
+### 本地检查、收尾与发布判断
+
+本轮本地 Debian WSL 的现有 **254 项单元/夹具测试通过**（6.902 秒）。Windows 原生尝试因缺 Linux fcntl 等条件出现 4 errors/134 skipped，不计为通过；随后在受支持 Linux 重跑。测试驱动初次使用 `operator.py` 与标准库同名、首次来源确认误发 `yes` 均已纠正，安装器在未获 `y` 确认时安全拒绝；没有把这些失败计为升级成功。一次提前排队的重启发生在旧版，单独保留为 v0.3 实际 reboot 证据，不混入 RC4 组数。
+
+VPS 最终 **254 项测试全部通过，38.529 秒，无失败/跳过**。本轮内核版本为 Xray 26.3.27、sing-box 1.14.3、Caddy 2.11.7。服务器未安装 Certbot、无 global IPv6 地址；未安装 ACME 依赖、未操作 Cloudflare、未请求任何 CA 证书。远端仍没有执行 ShellCheck，不能由 CI 或本地结果冒充。
+
+测试结束通过 NodePilot 自身卸载事务清理本次安装，保留私有备份/审计后将原路径副本原样移回。原 **103 个记录文件 SHA-256 全部一致**，原 NodePilot **v0.3.0 / 零节点**、timer **enabled + active** 恢复，x-ui/Docker active，临时节点/Caddy/payload 单元及监听清理。外部服务 PID 因已授权整机 reboot 改变，不能声称与本轮开始相同；文件完整性与运行状态分别检查。原始 journal（含敏感数据）和备份仅留 root 私有目录；本地忽略目录仅取回客户端必要参数、公开测试 PEM 与状态摘要/日志，不公开上传。验收 receipt 压缩包摘要 `10be8436026415f036f750950628118bb1eda7fe1357ffb1d2a723972134ecec`（29 个文件），原始文件不进入 Git。
+
+测试驱动首次 intent 停止点未命中时自动停止；检查无 pending/节点损坏后改为在真实初始 atomic_json 返回后退出，再重跑该场景。此为私有注入器修正，没有修改产品恢复逻辑。SSH 重连期间的短暂 banner 超时在确认新 boot ID 后恢复，不计为节点错误。
+
+管理器行为没有新增修改，本轮不增加功能、不改变 CA 默认行为、不更新 CHANGELOG。未确认新的未修复 P0/P1；真实 ACME 等未验收风险仍存在，不能据此宣称没有 P0/P1。真实升级/重启结论限于上表测试场景；正式 Release 下载升级、真实 CA、其他系统/架构/公网 IPv6、GUI、Docker 网站反代、256MiB 整机长期及安装/ACME 峰值仍未验证。**PR #1 继续 Draft，不解除草稿，不合并、不创建 RC5、不发布正式 v0.4.0。**

@@ -1,6 +1,6 @@
 # 真正 VPS 上的第一阶段验收
 
-本清单并非全部通过；最新授权 RC4 Debian 13 amd64 IPv4 公网/生命周期/进程组短测见 [VPS 报告文末](VPS_TEST_REPORT.md)，[v0.2.0 报告](CADDY_VALIDATION.md) 保留历史证据。干净安装/原程序升级、真实重启、完整系统/arm64/公网 IPv6/GUI、真实 ACME 及完整 256MiB 整机长测仍待执行。不要将配置与监听检查标为外网成功。
+本清单并非全部通过；最新授权 RC4 Debian 13 amd64 IPv4 公网/生命周期/进程组短测见 [VPS 报告文末](VPS_TEST_REPORT.md)，[v0.2.0 报告](CADDY_VALIDATION.md) 保留历史证据。本轮同机全新 NodePilot v0.3.0 正式安装→RC4 升级、10 组真实 reboot/恢复及失败保留已通过；干净 OS、正式 v0.4.0 Release 下载升级、完整系统/arm64/公网 IPv6/GUI、真实 ACME 及完整 256MiB 整机长测仍待执行。不要将配置与监听检查标为外网成功。
 
 1. 准备 1c/256MiB 实机，记录 `free -m`、架构、系统、已有服务和防火墙；另准备有 Caddy / Xray / sing-box 的测试机检查共存。
 2. 从真实发布 URL 执行单条安装命令。确认安装器校验项目包、选择节点时校验官方稳定内核并自动进入菜单。测试普通 SSH、`curl ... | bash` 和窄终端。
@@ -18,7 +18,7 @@
 
 记录格式：系统/规格、测试日期、内核与客户端版本、命令、真实输出、结果、失败原因。凭据/私钥/ACME 账户不得贴进公开 issue 或测试报告。
 
-## RC4 最终验收执行顺序（待授权测试机）
+## RC4 最终验收执行顺序（部分已通过）
 
 本节是完整计划；单机部分通过项以 VPS 报告为准，下面矩阵尚未整体通过。仅使用明确授权的测试范围、域名和最小权限 Token；既有业务必须保留，其他项目凭据不在授权范围。已有 `tools/vps_smoke.py`、`client_probe.py`、`resource_probe.py` 等工具继续复用，不建立第二套验收框架。
 
@@ -26,7 +26,7 @@
 
 | 维度 | 必须记录的实机组合 | 当前 RC4 状态 |
 |---|---|---|
-| 系统/架构 | Debian 12、13，Ubuntu 22.04、24.04；每系统 amd64/arm64，8 个基础组合 | Debian 13 amd64 部分通过；干净安装/原程序升级及其他组合待验收 |
+| 系统/架构 | Debian 12、13，Ubuntu 22.04、24.04；每系统 amd64/arm64，8 个基础组合 | Debian 13 amd64 同机全新 NodePilot 安装/升级及 10 组 reboot 已通过；干净 OS/其他组合待验收 |
 | 公网地址族 | 基础组合中覆盖 IPv4-only、IPv6-only、双栈；异常 IPv6 路由另测 | IPv4 三协议已实连；公网 IPv6-only/双栈待验收 |
 | 共存 | 独立 Xray/sing-box、3x-ui、系统 Caddy/Nginx TCP80/443、Docker 网站/反代与端口映射 | 原 x-ui/Xray 保持、临时独立服务接管归还通过；Docker 无运行容器，网站/反代完整拓扑待验收 |
 | 内存 | 真实 1c/256MiB（记录 swap），三协议分别及同时运行、自建 Caddy、安装/升级/ACME 峰值 | 2GiB 实机 256MiB cgroup 短测通过；完整整机/长期/ACME 仍待验收 |
@@ -70,3 +70,11 @@ python3 tools/client_probe.py --private-dir /path/to/private-client-artifacts --
 按上述 1c/256MiB 真机测安装、下载/解包、三内核启动、证书签发/续期、程序/内核升级与连续数据传输，记录整机 MemAvailable、CPU、RSS、memory.current/peak、swap 和 OOM 日志。已有 resource_matrix 仅提供 18–60 秒 cgroup 对照，整机长测至少数小时并另行记录；超过预算或 OOM 就不能宣称该规格支持三协议同时部署。不要在验收时擅自调整全局 sysctl、IPv6、swap 或防火墙。
 
 所有必验项目均通过、失败恢复可复现、私密产物审计通过后再评估正式 v0.4.0。当前允许冻结候选进入测试，PR #1 保持 Draft，不合并 main、不创建 RC5 或正式 Release。
+
+## 2026-10-17 专项进度与剩余条件
+
+用户重新授权原 VPS 后，v0.3 正式 Release 安装→可信 RC4 本地升级、10 组真实 reboot（五种 timer 状态、intent/reloaded/complete/回滚中断、节点 pending）、三项真实安装器拒绝、两项无效候选夹具、官方内核启动失败回滚/Caddy 原生拒绝已通过。每次重启均有新 boot ID、原节点摘要与公网三协议重连；本轮 42MiB 数据、254 项实机测试通过，原安装/103 个文件摘要及续期策略恢复。详见 [完整矩阵与复现入口](VPS_TEST_REPORT.md#rc4-程序升级与真实重启专项2026-10-17)。不能据此把未知/损坏事务的全部夹具计为真实重启测试，也不代表干净 OS 或断电测试。
+
+真实 ACME 仍为发布阻断项：需授权测试域名、Cloudflare Zone ID、目标 Zone 的 DNS:Edit/Zone:Read Token（仅私有文件路径），及 TXT 创建/清理、Staging 和有限正式签发授权。服务器当前无 Certbot/global IPv6；实际插件依赖与公网 IPv6 另验。现有代码固定正式 CA，Staging 测试必须采用隔离且审核过的官方配置、独立状态和显式测试信任锚，不关闭 TLS 校验，不把测试证书当作正式信任通过。AnyTLS/HY2/Caddy DNS-01、Caddy HTTP-01、真实续期/失败清理/Token 日志仍逐项未执行；上文对应步骤保留为待做清单。
+
+当前不解除 PR #1 Draft，不合并 main，不创建 RC5 或正式 Release；等待 ACME 与其余平台/低内存验收后再次评审。
