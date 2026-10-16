@@ -1,6 +1,6 @@
 # v0.4.0 RC4：安装器事务保护与发布前验收
 
-本页保留历次 RC4 历史证据（行号对应当时提交）。**当前结论以文末“RC4 Reality 检测与便携恢复稳定性”一节为准**，基线 `42d4bbf`；不创建 RC5。前文测试、产物摘要和环境结论不能代替最新节的本轮验证。
+本页保留历次 RC4 历史证据（行号对应当时提交）。**当前结论以文末“RC4 手动选站一致性与最终审查”一节为准**，基线 `184653e`；不创建 RC5。前文测试、产物摘要和环境结论不能代替最新节的本轮验证。
 
 日期：2026-10-15。分支 `codex/v0.4.0-stability`，现有 [PR #1](https://github.com/km-hl/Node-Pilot/pull/1)。开始前 fetch 并核对 GitHub，最新提交仍为审查基线 `5a7a6ab83d51bcef1d1d6bd1956693f54def8f58`。修改前 Linux 完整基线 159 项通过。PR 保持草稿，不合并 main，不创建 Release。
 
@@ -502,3 +502,79 @@ python3 tools/release_audit.py
 清理确认：NodePilot 程序/状态/命令/续期单元及 /etc、/run 启用链接均不存在，无加载的 nodepilot-* 单元，/var/lib/nodepilot-*-test-* 与 /run/nodepilot-restore-test-* 无残留。87 个允许公开的 Git 暂存文件范围/敏感信息审计通过；22 个修改/新增文件均为公开源码、测试、文档和 CI，没有 dist/二进制/配置/Token/原始日志上传。最终候选 Windows/Linux/dist 包字节摘要一致，源与 dist 安装器逐字节一致，SHA-256 为 `f484151fb00c02d98cd2be0bd6cf76cd0c09e7acad42f5e35aef093600eca210`。
 
 本轮修改清单：targets.py、manager.py、certificates.py、menu.py、services.py；test_features.py、test_targets.py、test_restore.py、test_manager.py、test_menu.py、test_caddy.py、test_release_candidate.py；tools/target_smoke.py、restore_smoke.py、upgrade_smoke.py、client_probe.py；install.sh 的摘要绑定、.github/workflows/check.yml 的本地传输步骤；README、CHANGELOG、REALITY_FLOW 和本报告。关键函数/测试位置及复现命令见上文；最终提交 SHA 与远端 PR/CI 核验在交付答复及 PR 中给出。正式 v0.4.0 附件仍未发布。
+
+## RC4 手动选站一致性与最终审查（当前结论）
+
+日期：2026-10-16。开发前 HEAD `184653efcc0618ac8b296e1038bc4e30a5885626`；`git pull --ff-only origin codex/v0.4.0-stability` 确认已同步，PR #1 OPEN/DRAFT、head 相同，无审查评论。阅读 README、CHANGELOG、上述 RC4 记录及既有测试后继续原分支。本轮提交 SHA、推送及 CI 状态见交付答复与同一 PR 的当前说明；不创建新 PR/RC5/正式 Release，不合并 main。
+
+### 修复及兼容边界
+
+| 等级/位置 | 可复现问题与修复 | 兼容性/验证 |
+|---|---|---|
+| P2 `menu.py:reality_input` | 手动检查返回 IP，却保存原域名，实际运行可能连接未经验证地址。默认改用返回的 target，原输入另存；保留独立 SNI。 | 新建/明确重选才采用新行为。编辑旧第三方节点默认 keep；原 target/SNI/UUID/shortId/密钥不因升级或回车重选。保存仍走已有原生检查/事务确认。 |
+| P2 `menu.py`、`targets.py:screening_unknown/rank_targets` | HTTP 失败仍可无额外确认手动使用。现列出未知分项/原因，建议重测，强制采用需两次确认；明确 CF 直接拒绝、TLS 证据不足不能强制通过。 | 自动候选要求分项完成证据，单设 cf_screened=True 不生效。官方 IP 段或 DNS 获取失败仍直接中止，不放宽原校验。 |
+| P2 `targets.py:inspect_target/recheck_target/target_status` | 手动记录 target 与运行域名不匹配，动态模式未区分，SNI 修改后历史可能错误关联。新增明确模式/本次 IP/地址族/端口；动态域名须风险确认，复查独立显示 DNS/抽测范围，dns_drift 保持空值；历史还需匹配 SNI。 | 旧记录继续读取，缺证据显示未知，不推测模式。固定 IP 仍按 requested_target 原域名检查漂移，IP 原目标不适用，IPv6 按值比较；只写诊断，不改节点。 |
+| P1 `caddy.py:Caddy.assert_owned`、`installation.py:assert_renew_owned` | 磁盘自有文件存在时，Caddy 与卸载/恢复续期单元遗漏实际加载 FragmentPath。外部同名单元可能被停止。现操作前核对加载来源、文件及 drop-in，查询失败也拒绝；卸载两类恢复阶段先全体预检，保留原事务。 | 外部变化会保守拒绝并需人工核对，不修复/覆盖外部服务。正常安装/续期策略/回滚不变。单元故障注入及三个真实 systemd 外部加载单元拒绝验证通过。 |
+| P2 验收工具 `vps_smoke.py:setup` | 旧测试池从 Cloudflare/Apple 等选首个 TLS 站点，与正式 CF 检查矛盾，可能在随后创建时失败。现复用 rank_targets 和固定 IP/独立 SNI/selection。 | 两个模拟测试检查选择传递和无合格候选时不创建服务；本轮不在真实 VPS 执行 setup，不声称公网验收已完成。 |
+
+selection 新字段：target_mode=pinned_ip/literal_ip/dynamic_dns、dynamic_dns、original_host、target_port、selected_ip、selected_family、tested_target；既有 requested_target、target、sni、checked_at、addresses/failures/untested_addresses、checks 保留。动态 target 为原域名，本次 tested_target 仍为通过三次 TLS 检测的 IP。手动 IP 输入保留原写法；域名固定只能选已验证结果，失败地址不会进入 results。没有改变节点 schema、服务端协议配置格式或分享认证字段。
+
+字段关系对照 [Xray 官方 REALITY 配置](https://xtls.github.io/config/transports/reality.html)：target 与 serverNames/客户端 serverName 分开，固定 IP 不改客户端 SNI。也核对 [sing-box AnyTLS](https://sing-box.sagernet.org/configuration/inbound/anytls/) 和 [Hysteria2](https://sing-box.sagernet.org/configuration/inbound/hysteria2/) 文档；本轮未改这两种协议生成器，原生检查使用下述具体版本，不宣称所有未来版本兼容。
+
+### 最终测试证据
+
+环境：本机可销毁 Debian 13 amd64 WSL，真实 PID1/systemd；无生产服务器访问。基线 **236** 项通过，最终 **253** 项通过，0 failure/error/skip（新增 17 个方法及其子场景）。覆盖手动域名固定/IP 保留/独立 SNI/高级动态确认及取消、CF 未知二次确认与明确 CF 拒绝、布尔值绕过拒绝、多个 IPv4/IPv6/首地址失败/部分族不可达、原域名 DNS 变化与等价 IPv6、keep/旧记录/新 SNI 不复用历史；既有创建/修改/启动慢/PID 变化/启动失败回滚、升级异常/外部单元、坏证书/旧 ACME/接管备份拒绝/重复恢复测试保留。
+
+| 证据层级 | 本轮实际执行结果 |
+|---|---|
+| 单元/Mock/故障注入 | 253 项全部通过；网络、CA、Release API、启动周期相关夹具仍是模拟，不能算公网/重启成功。 |
+| 原生配置/静态 | Xray 26.3.27、sing-box 1.14.3、Caddy 2.11.7 的缓存官方内核共 **10 项**通过（原 8 项加固定 IPv4/IPv6 target + 独立 SNI）；Mihomo 1.19.32 三协议 YAML 解析通过。编译、自检、bash -n、ShellCheck 0.10.0、git diff --check 通过。 |
+| 本地真实 TLS/HTTP | target_smoke 的 **9 场景**通过，含 200/301/302/403/404、CF 标记、头未完成、SNI 错误与 TCP 拒绝；DNS/官方网段是夹具，TLS 证书用测试信任锚，未关闭校验。 |
+| 真实 systemd | 主批次 **23 条命令**全部退出 0（其中静态/原生等 8 条，服务/安装/恢复等 15 条）。含三协议监听/失败回滚/删除隔离、两节点坏证书/原生预检与 Token 不变、双 Caddy 编辑和证书恢复、PTY 安装/旧版升级/来源迁移、六策略 × 严格/人工 complete 共 **12 组**、续期失败保留旧证书/修订、卸载中断续做、两个独立源服务接管/归还。 |
+| 实际加载外部单元 | 另用三个 /run 临时单元验证 Caddy/renew.service/renew.timer 的真实 FragmentPath，全部拒绝，外部字节和 inactive 状态不变；临时单元清理。 |
+| 本地真实代理数据 | 补充 stability setup/cleanup、sing-box 客户端三协议和 Xray Reality 客户端，均正常证书校验，每协议两次、合计每组 2MiB 数据 SHA-256 一致。分享地址夹具映射 127.0.0.1，工具 external 字段不能当作公网证明。自建目标/测试信任证书不代表第三方公网固定 IP 实连。 |
+| GitHub Actions | 推送后的精确提交状态以 PR/交付核验为准；不将本地通过当作 CI 成功。CI 原流程含官方重新下载/校验，未删减。 |
+| 真实 VPS/ACME/重启/性能 | **本轮未执行**。无授权测试 VPS/域名/Token；未做真实 CA/DNS-01/HTTP-01、公网 IPv6/UDP/云安全组、整机 reboot、arm64/四系统、GUI、1c/256MiB 整机长测。 |
+
+本次未重新执行 native_check/mihomo_check 的 `--download` 分支；使用先前通过官方 SHA-256/ELF/版本校验的具体缓存版本。没有把旧下载成功或历史 49 条 smoke 当成本次重跑，也没有为本轮声称全旧版本/全部 timer 中断阶段复跑。低内存仅延续已有设计限制；本次服务 smoke 空闲 RSS 合计 125228 KiB 不含整机/安装/ACME 峰值，不是 256MiB 可用性证明。
+
+复现主批次命令（只能在已检查为空且明确授权的可销毁 Linux 环境运行，涉及 systemd 的工具串行）：
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q nodepilot_pkg tests tools
+bash -n install.sh
+shellcheck install.sh
+python3 nodepilot self-check
+python3 tools/native_check.py
+python3 tools/mihomo_check.py
+python3 tools/target_smoke.py --local
+python3 tools/http_family_smoke.py
+python3 tools/service_smoke.py
+python3 tools/restore_smoke.py --disposable
+python3 tools/caddy_smoke.py setup
+python3 tools/caddy_smoke.py cleanup
+python3 tools/install_smoke.py
+python3 tools/upgrade_smoke.py --legacy-app .test-tools/legacy-source
+python3 tools/source_smoke.py --disposable
+python3 tools/complete_smoke.py --disposable --legacy-source .test-tools/rc3-source
+python3 tools/stability_smoke.py setup
+python3 tools/stability_smoke.py uninstall
+python3 tools/stability_smoke.py cleanup
+python3 tools/adoption_smoke.py setup
+python3 tools/adoption_smoke.py adopt
+python3 tools/adoption_smoke.py return
+python3 tools/adoption_smoke.py cleanup
+```
+
+最初一个新增 keep 测试将旧行为补全 mode=external 误当成连接参数变更，修正夹具并增加无 mode 旧节点的默认 keep 参数测试后通过。临时调度器初次缺 sys.path 导致工具尚未运行，修正后完整运行。一次 WSL 单元命令权限自动审查超时，按指引重试成功；不是测试失败或安全限制。原始日志、调度器、客户端测试证书/配置及本地包均留忽略目录，不上传。
+
+### 审查范围与发布判断
+
+逐模块检查 manager、deploy、services、targets、certificates、dns_credentials、caddy、adoption、installation、project_update，并对照 model/config/connectivity、相关测试与既有修复。重点复核所有权、锁/事务/回滚、路径和符号链接、证书/Token、3x-ui/独立服务边界、80/443 占用、便携恢复与来源授权。仅修改上表可解释/复现的问题；其余模块保持现有实现，不增加依赖、协议、数据库、Web/常驻服务或大规模重构。Docker 网络、网站反代和生产服务拓扑只做代码边界审查，没有实际共存验收。
+
+本轮发现的 P1/P2 已修复，审查范围内未确认尚未修复的 P0/P1；不能据此保证全项目在所有环境无缺陷。持续 I/O 故障、损坏/外部修改的恢复证据可能仍需人工核对，便携整包恢复不是全包原子事务。旧管理器不具备新事务守卫，须用可信新版恢复。
+
+**建议冻结当前 RC4 代码，进入授权可销毁真实 VPS 最终验收；不建议现在合并 main 或正式发布 v0.4.0。** 发布阻塞验收包括真实 DNS-01/续期/失败清理和实际插件脱敏、真实 reboot/升级异常恢复、公网 IPv6/UDP/云防火墙、系统/arm64 矩阵、3x-ui/Docker/既有网站共存、GUI 客户端，以及 1c/256MiB 安装/ACME/升级峰值和长期负载。详见完善后的 [VPS 验收清单](VPS_ACCEPTANCE.md)，这些是未验证风险，不冒充已复现 P1 缺陷。
+
+最终可复现包（Windows/Linux 一致）SHA-256：`645d116e5dd1ceceb4c7af3e5b372997e9de36010f9f29481e4bb46e5c2990ae`；源码 install.sh 与本地生成安装器绑定同一摘要。默认 v0.4.0 Release 附件仍未发布。临时程序/状态/服务已清理；公开文件范围、敏感信息和提交后 payload 逐文件审计结果随交付核验记录。

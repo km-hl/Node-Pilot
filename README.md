@@ -1,6 +1,6 @@
 # NodePilot
 
-当前为 **v0.4.0 RC4 候选**，PR 保持草稿；[RC4 验证报告](docs/RC_FOUR_VALIDATION.md) 记录安装器活动事务保护、四版本恢复、真实 systemd 验证及发布阻塞项。[RC3 报告](docs/RC_THREE_VALIDATION.md) 和 [RC2 报告](docs/RC_TWO_VALIDATION.md) 保留此前证据。不建议现在合并或发布稳定版。
+当前为 **v0.4.0 RC4 候选**，PR 保持草稿；[RC4 验证报告](docs/RC_FOUR_VALIDATION.md) 记录手动/自动 Reality 固定 IP、动态域名风险确认、服务所有权、恢复验证及发布阻塞项。[RC3 报告](docs/RC_THREE_VALIDATION.md) 和 [RC2 报告](docs/RC_TWO_VALIDATION.md) 保留此前证据。不建议现在合并或发布稳定版。
 
 轻量 VPS 节点搭建与管理工具，当前源码 `0.4.0` 候选。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
 
@@ -42,11 +42,11 @@ nodepilot
 
 - Reality 默认建议 TCP 443，AnyTLS 建议 TCP 8443，HY2 建议 UDP 443。始终先查占用；TCP 和 UDP 同一端口号可以共存。
 - 自动生成 UUID、密码、x25519 和 shortId；可输入自己的参数。Reality 私钥不出现在分享链接中。
-- Reality 默认询问自有域名：提供域名时采用 **Caddy 证书 + 本机目标**，SNI、serverNames、证书域名一致；本机目标只监听 127.0.0.1，Xray 使用 PROXY protocol v1 转发。Caddy 可反向代理用户指定 HTTPS 网站，默认欢迎页减少资源消耗。无域名时才选第三方：通过 OpenSSL 实测三次可信证书/SNI、TLS 1.3、h2 和实际 X25519 组，按中位时延及波动排序；排除检测到的 CF。HTTP 跳转、403 等仅显示质量警告，不关闭证书校验。分 IPv4/IPv6 测最多各三个地址，失败继续其他 IP，保留未测/失败记录；自动推荐目标固定到本次验证的 IP，手动目标保留原输入。不改现有节点 SNI。详见 [Reality 流程](docs/REALITY_FLOW.md)。
+- Reality 默认询问自有域名：提供域名时采用 **Caddy 证书 + 本机目标**，SNI、serverNames、证书域名一致；本机目标只监听 127.0.0.1，Xray 使用 PROXY protocol v1 转发。Caddy 可反向代理用户指定 HTTPS 网站，默认欢迎页减少资源消耗。无域名时才选第三方：通过 OpenSSL 实测三次可信证书/SNI、TLS 1.3、h2 和实际 X25519 组，按中位时延及波动排序；排除检测到的 CF。HTTP 跳转、403 等仅显示质量警告，不关闭证书校验。分 IPv4/IPv6 测最多各三个地址，失败继续其他 IP，保留未测/失败记录；手动与自动默认固定到本次验证的 IP，原输入另存，SNI 独立。手动高级选项可明确确认保留动态域名；CF 分项未知列出原因，默认建议重测，强制采用须两次确认。旧节点不会因升级自动换目标。详见 [Reality 流程](docs/REALITY_FLOW.md)。
 
 Reality 检测分开保存官方 IP 段、系统 A/AAAA/可见规范名、所选 IP 的 HTTP 响应头，以及 TLS1.3/X25519/h2/证书结果。HTTP 超时、拒绝连接、证书错误或无效响应头意味着 CF 头检查**未知**，即使 TLS 可用也不进入自动排名；301/302/403/404 的有效响应头仍能检查 CF 特征，不将状态码直接视为 TLS 失败。`cf_screened` 仅表示当前范围的检查完成，不能证明完全不使用 Cloudflare；系统规范名也不是完整 CNAME 链审计，未测地址另列。Google/Apple 不回到默认列表。
 
-菜单 8 → 5 复查时，DNS 漂移只比较匹配选站记录中的 `requested_target` 域名与当前固定 IP，客户端 SNI 单独用于 TLS/CF 检测。原目标是 IP 时显示“不适用”；旧节点缺少原始选站记录、记录与当前目标不匹配、域名目标未固定或 DNS 失败时显示“未知”。IPv6 按地址值比较，多 A/AAAA 中仍包含固定 IP 就不报漂移。复查只写诊断结果，不切换 target、不改节点或服务。
+菜单 8 → 5 复查时，DNS 漂移只比较匹配选站记录中的 `requested_target` 域名与当前固定 IP，客户端 SNI 单独用于 TLS/CF 检测。原目标是 IP 时显示“不适用”；明确选择的动态域名独立显示当前 DNS/本次抽测结果，不作固定 IP 漂移比较；旧节点缺少记录、记录失配或 DNS 失败时显示“未知”。IPv6 按地址值比较，多 A/AAAA 中仍包含固定 IP 就不报漂移。复查只写诊断结果，不切换 target、不改节点或服务。
 - 证书菜单：1 HTTP-01、2 Cloudflare DNS-01、3 导入 PEM、4 明确标记的 30 天测试自签名。必须匹配 SNI；不生成 `insecure=1`。自建 Caddy 也支持四种方式，DNS-01 由独立 certbot 签发 PEM，使用官方 Caddy 即可。
 - HTTP-01 必须确认全部 A/AAAA 指向本机及公网 TCP 80 可达；只检查 DNS 实际发布的地址族，IPv6 内核不可用不影响合法 IPv4-only 申请。IPv6-only 域名要求本机 IPv6 真正可用。不会停止已有 Caddy/Nginx。ACME 邮箱可留空，需要同意 CA 条款。
 - Cloudflare DNS-01 无需 TCP 80，也不要求 A/AAAA 指向 VPS。Token 限定所需 Zone 的 DNS:Edit/Zone:Read；输入 Zone ID 和传播等待时间。NodePilot 使用发行版 certbot 插件自动创建/清理 TXT、等待传播；Token 隐藏输入，存独立 0600 文件，不写入节点元数据、分享链接、命令行或单元。独立 runner 在日志写入前脱敏，并隔离 SDK 全局凭据及 certbot 配置。真实 CA/DNS 签发仍待可用域名/Token 实测。

@@ -76,6 +76,27 @@ class CaddyConfigTests(unittest.TestCase):
                     caddy.sync([self_node()])
             command.assert_not_called()
 
+    def test_loaded_foreign_caddy_refused_even_when_owned_file_exists(self):
+        from nodepilot_pkg.cores import Cores
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);caddy=Caddy(p/'state',Cores(p/'cores'),p)
+            unit=p/'nodepilot-caddy.service';unit.write_text(caddy.content())
+            for loaded in ('/run/systemd/system/nodepilot-caddy.service','/usr/lib/systemd/system/nodepilot-caddy.service'):
+                with patch('nodepilot_pkg.caddy.run',return_value=loaded) as command:
+                    with self.assertRaisesRegex(PilotError,'外部路径'):caddy.sync([])
+                self.assertTrue(all(c.args[0][1]=='show' for c in command.call_args_list))
+                self.assertEqual(unit.read_text(),caddy.content())
+
+    def test_fragment_query_failure_cannot_authorize_caddy_mutation(self):
+        from nodepilot_pkg.cores import Cores
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);caddy=Caddy(p/'state',Cores(p/'cores'),p)
+            unit=p/'nodepilot-caddy.service';unit.write_text(caddy.content())
+            with patch('nodepilot_pkg.caddy.run',side_effect=PilotError('query failed')) as command:
+                with self.assertRaisesRegex(PilotError,'query failed'):caddy.sync([])
+            self.assertEqual(unit.read_text(),caddy.content())
+            self.assertTrue(all(c.args[0][1]=='show' for c in command.call_args_list))
+
 
 class FakeCaddy:
     def __init__(self):

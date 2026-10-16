@@ -268,16 +268,28 @@ def inspect_target(target, sni, networks):
     best = min(screened or results, key=lambda x: (x["median_ms"], x["spread_ms"]))
     pinned = f"[{best['ip']}]:{port}" if best["family"] == 6 else f"{best['ip']}:{port}"
     return {"target": pinned, "requested_target": target, "sni": sni, "median_ms": best["median_ms"], "spread_ms": best["spread_ms"],
+            "target_mode": "literal_ip" if is_ip(h) else "pinned_ip", "dynamic_dns": False,
+            "original_host": h, "target_port": port, "selected_ip": best['ip'],
+            "selected_family": best['family'], "tested_target": pinned,
             "feasible": True, "tls": "TLSv1.3", "alpn": "h2", "group": best["group"],
             "certificate_verified": True, "addresses": results, "failures": failures,
             "untested_addresses": [ip for ip in ips if ip not in tested], "warnings": best["warnings"],
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "cf_screened": bool(networks) and best['http_check']['status']=='passed',
-            "checks":{'ip_ranges':{'status':'passed' if networks else 'unknown','addresses':ips},
+            "checks":{'ip_ranges':{'status':'passed' if networks else 'unknown','addresses':ips,
+                                   **({} if networks else {'reason':'Cloudflare 官方 IP 段不可用'})},
                       'dns_cname':{'status':'passed','scope':'系统 A/AAAA 与可见规范名称；非完整 CNAME 链审计'},
                       'http_headers':best['http_check'],
                       'tls':{'status':'passed','tls':'TLSv1.3','group':'X25519','alpn':'h2','certificate_verified':True}},
             "note": "CF 筛查仅覆盖当前官方网段、系统可见 DNS 规范名和所选 IP 响应头，不能证明完全不使用 CF。VPS 至目标三次 OpenSSL TCP+TLS 中位时延，不是长期或客户端联通证明。"}
+
+
+def screening_unknown(result):
+    """Require per-check evidence; a legacy cf_screened boolean is insufficient."""
+    checks = result.get('checks', {})
+    return [name + '：' + checks.get(name, {}).get('reason', '缺少完成记录')
+            for name in ('ip_ranges', 'dns_cname', 'http_headers', 'tls')
+            if checks.get(name, {}).get('status') != 'passed']
 
 
 def rank_targets(domains=None, report=None):
@@ -289,7 +301,7 @@ def rank_targets(domains=None, report=None):
         host(domain, public=True)
         try:
             result = inspect_target(domain + ":443", domain, networks)
-            if result.get('cf_screened') is not True:
+            if result.get('cf_screened') is not True or screening_unknown(result):
                 raise PilotError('CF 筛查未完成，自动选站排除；'+'；'.join(result.get('warnings',[])))
             ranked.append(result)
             message = f"{domain}：TLS1.3/h2/X25519/证书通过；当前网段/DNS 规范名/所选 IP 响应头未见 CF 特征；{result['median_ms']} ms，波动 {result['spread_ms']} ms"
@@ -311,7 +323,7 @@ def target_identity(node):
 
 
 def recheck_target(state, node):
-    """Manual read-only network recheck; never select a replacement address."""
+    """Manual read-only recheck of a fixed IP or explicitly dynamic domain."""
     from .common import atomic_json, private_dir
     if node['protocol']!='reality' or node['reality'].get('mode')=='self':
         raise PilotError('此操作只适用于第三方 Reality 目标；自建目标请查看 Caddy 证书/服务。')
@@ -333,21 +345,27 @@ def recheck_target(state, node):
             addresses, _ = resolve(original)
             record.update(dns=addresses,dns_drift=ipaddress.ip_address(fixed) not in {ipaddress.ip_address(a) for a in addresses},
                           dns_status='已检查原始目标域名 '+original)
+        elif selection.get('target_mode') == 'dynamic_dns' and selection.get('dynamic_dns') is True:
+            addresses, _ = resolve(original)
+            record.update(dns=addresses, dynamic_dns=True,
+                          dns_status='动态域名：当前 DNS 已解析；运行时可能变化，不作固定 IP 漂移比较')
         else:
             record['dns_status']='未知：当前目标未固定 IP'
     except (PilotError, OSError):
         record['dns_error']='原始目标 DNS 未验证或原始选站记录缺失；漂移未知'
         record['dns_status']='未知：原始目标 DNS 或选站证据未验证'
     try:
-        # inspect_target probes precisely this fixed IP, rather than a new DNS IP.
-        if not is_ip(fixed):
+        # Fixed nodes probe precisely their IP; explicit dynamic nodes sample DNS.
+        if not is_ip(fixed) and not record.get('dynamic_dns'):
             raise PilotError('旧目标尚未固定 IP；请在菜单 5 手动重新检测并选择目标。')
         networks=cloudflare_networks()
         checks=[]
         for sni in node['reality']['server_names']:
             checks.append(inspect_target(node['reality']['target'],sni,networks))
         record.update(status='最近检测通过：TLS1.3 / X25519 / h2 / 可信证书',result=checks[-1],results=checks)
-        record['status']+='；CF 当前范围筛查完成' if all(c.get('cf_screened') is True for c in checks) else '；CF 筛查未知/未完成'
+        record['status']+='；CF 当前范围筛查完成' if all(c.get('cf_screened') is True and not screening_unknown(c) for c in checks) else '；CF 筛查未知/未完成'
+        if record.get('dynamic_dns'):
+            record['status']+='；仅代表本次抽测地址，运行时 IP 未固定'
     except (PilotError, OSError) as error:
         record['diagnostic']=str(error)
     if record['dns_drift']:
@@ -366,7 +384,7 @@ def target_status(state, node):
             return record['status']+'；检测时间 '+record['checked_at']
     selection = node['reality'].get('selection',{})
     if not isinstance(selection,dict):selection={}
-    if selection.get('target') == node['reality']['target']:
+    if selection.get('target') == node['reality']['target'] and selection.get('sni') == node['sni']:
         scope='CF 分项范围有记录' if selection.get('checks') else '旧 CF 检测范围未知，建议复查'
-        return '选站历史；'+scope+'；时间 '+selection.get('checked_at','未知')+'；菜单 8 → 5 可手动复查固定 IP/DNS'
-    return '尚未检测当前固定目标；菜单 8 → 5 可检查并评估手动重选'
+        return '选站历史；'+scope+'；时间 '+selection.get('checked_at','未知')+'；菜单 8 → 5 可手动复查目标/DNS'
+    return '尚未检测当前目标；菜单 8 → 5 可检查并评估手动重选'

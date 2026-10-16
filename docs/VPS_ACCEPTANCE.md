@@ -4,7 +4,7 @@
 
 1. 准备 1c/256MiB 实机，记录 `free -m`、架构、系统、已有服务和防火墙；另准备有 Caddy / Xray / sing-box 的测试机检查共存。
 2. 从真实发布 URL 执行单条安装命令。确认安装器校验项目包、选择节点时校验官方稳定内核并自动进入菜单。测试普通 SSH、`curl ... | bash` 和窄终端。
-3. 默认创建自有域名 Reality，Caddy HTTP-01 自动申请、等待本机目标证书/TLS 就绪，验证 Xray PROXY v1 和真实 Vision 客户端连接；再测试无域名时从 VPS 实测非 CF 目标。CF、跳转及 TLS 不合格站点须排除；确认分享未含私钥。
+3. 默认创建自有域名 Reality，Caddy HTTP-01 自动申请、等待本机目标证书/TLS 就绪，验证 Xray PROXY v1 和真实 Vision 客户端连接；再测试无域名时从 VPS 实测目标。明确 CF 或 TLS 不合格站点拒绝；301/302/403/404 的有效响应头独立检查 CF 并提示网页质量，不当作 TLS 失败；确认分享未含私钥。
 4. 创建 AnyTLS TCP 8443。先检查域名全部 A/AAAA，放行 HTTP-01 TCP 80，用 ACME 实际签发并验证链；再测证书导入、SNI 不匹配拒绝和测试自签名手动信任。
 5. 创建 HY2 UDP 443，按需使用 salamander。检查 ss、主机防火墙和云安全组；从外部客户端真实 QUIC 连接，测试密码和混淆错误。
 6. 分别在目标版本 Mihomo/Clash Meta、sing-box、v2rayN、Egern 测导入与连接；记录版本和不支持项，不把某一个客户端成功推广成所有兼容。
@@ -17,3 +17,56 @@
 13. 卸载需二次确认，只停止/删除精确属于 NodePilot 的文件与单元，保留凭据备份；再次确认 Caddy/Xray/sing-box 服务未改变。
 
 记录格式：系统/规格、测试日期、内核与客户端版本、命令、真实输出、结果、失败原因。凭据/私钥/ACME 账户不得贴进公开 issue 或测试报告。
+
+## RC4 最终验收执行顺序（待授权测试机）
+
+本节是计划，不是通过记录。仅使用明确授权且可销毁的 VPS、测试域名和最小权限 Token。现有生产机及其他项目凭据不在授权范围。已有 `tools/vps_smoke.py`、`client_probe.py`、`resource_probe.py` 等工具继续复用，不建立第二套验收框架。
+
+### 环境矩阵与记录
+
+| 维度 | 必须记录的实机组合 | 当前 RC4 状态 |
+|---|---|---|
+| 系统/架构 | Debian 12、13，Ubuntu 22.04、24.04；每系统 amd64/arm64，8 个基础组合 | 待验收；WSL/CI 不抵扣 |
+| 公网地址族 | 基础组合中覆盖 IPv4-only、IPv6-only、双栈；异常 IPv6 路由另测 | 待验收 |
+| 共存 | 独立 Xray/sing-box、3x-ui、系统 Caddy/Nginx TCP80/443、Docker 网站/反代与端口映射 | 待验收；操作前后保存配置哈希和状态 |
+| 内存 | 真实 1c/256MiB（记录 swap），三协议分别及同时运行、自建 Caddy、安装/升级/ACME 峰值 | 待验收；不得用 GOMEMLIMIT 或 cgroup 短测替代 |
+| 客户端 | 目标版本 Mihomo、sing-box、v2rayN、Egern，逐协议导入、验证证书、外网传输 | 待验收；记录不支持功能/版本 |
+
+每个组合记录 commit、安装器和 payload SHA-256、OS/架构、内核/客户端版本、地址族、时间、阶段、返回码及脱敏结果。私有 URI/密钥/Token、原始日志留本机，公开报告只保存审核后的摘要。
+
+### 可执行入口与三协议连接
+
+正式 v0.4.0 Release 附件尚未发布，当前使用审核过的候选源码运行 `bash install.sh --local`；另测试 `--local --upgrade`。默认在线入口的成功验收须等受审查附件可用，不能用 curl 替身标为下载成功。确认 SSH TTY、窄屏、重复安装及管道入口，并检查已有服务未改变。
+
+在新建的授权测试机，记录安装前服务/文件/防火墙状态后，可使用现有工具创建测试节点：
+
+```bash
+python3 tools/vps_smoke.py setup --private-dir /root/nodepilot-acceptance
+python3 tools/vps_smoke.py status --private-dir /root/nodepilot-acceptance
+python3 tools/vps_smoke.py export --private-dir /root/nodepilot-acceptance
+python3 tools/vps_smoke.py payload --private-dir /root/nodepilot-acceptance
+```
+
+`setup` 需真实 SSH_CONNECTION，按正式选站流程筛查并固定 IP；无合格目标安全中止。工具的 AnyTLS/HY2 是测试自签名，**不能验收真实 ACME**。`payload` 保持前台，在另一会话完成后停止；它只监听 loopback。通过已授权 SSH 安全取回 clients.json、payload.json 及公开测试 PEM 到独立客户端，目录权限 0700，禁止公开上传；服务端 Reality/TLS 私钥不取回。在独立网络的 Linux 客户端使用已校验内核：
+
+```bash
+python3 tools/client_probe.py --private-dir /path/to/private-client-artifacts --requests 2 --parallel 2 --https-check
+python3 tools/client_probe.py --private-dir /path/to/private-client-artifacts --protocol reality --reality-core xray --requests 2
+```
+
+核对真实 VPS 公网地址、三协议数据长度与 SHA-256、HTTPS 正常校验；跨公网测试才记录公网成功。字段 external_encrypted_transfer 本身不能证明测试跨公网。同机/WSL/地址替换为 loopback 必须标为本地。GUI 客户端另导入/实连；错误密码、错误 obfs、错误 SNI 应失败，主机防火墙/云安全组分开检查，UDP 不能由 TCP/ss 推断。
+
+运行 `python3 tools/vps_smoke.py lifecycle --private-dir /root/nodepilot-acceptance`，再从外部重连，检查修改/回滚/删除隔离。菜单另外验收手动域名默认固定、手动 IP 不变、SNI 与原域名不同、多个 A/AAAA/部分不可达、CF 未知两次确认及取消无改动、动态域名风险确认和独立 DNS 状态、keep 认证参数不变；对照 node.json、原生配置、URI，受控改变原域名 DNS 后仅写诊断、不自动改 target。
+
+### 证书、重启、升级与归还
+
+- 授权测试 Zone 先用隔离且审核过的 Staging 配置验收 TXT 创建、传播、成功/失败清理，再正式签发一次。当前程序固定正式 CA；不要误将现有菜单当作 Staging 开关。验证 AnyTLS/HY2/Caddy DNS-01 新证书、私钥配对、SNI、真实客户端连接、自动续期；注入 Zone/Token/网络错误及中断，旧证书/修订/服务须保留，核对 TXT 残留与真实插件日志脱敏。
+- 记录 timer 的 UnitFileState、ActiveState、/etc 与 /run 启用链接。分别测试 disabled+active、enabled+inactive、enabled-runtime 及正常 enabled；真实重启后按开机策略恢复，不重放上一启动的 runtime/手动运行状态。测试升级 intent/current/checked 和 rolling_back 阶段异常/断网/摘要错误/重启，用可信 RC4 恢复；再运行一次恢复确认无重复外部操作。未知/损坏证据保留并拒绝。
+- 对正常/损坏证书、旧 HTTP-01/DNS-01 备份做全包预检；凭据不迁移，自动证书恢复为 import 且显示续期关闭；接管备份拒绝便携恢复。临时外部同名单元、FragmentPath 和 drop-in 不匹配必须在操作前拒绝。
+- 独立服务接管必须两次确认；3x-ui/包装器拒绝。验收归还及失败恢复、连续恢复不重复改变源服务；确认源文件哈希、启用/运行策略。最后运行 cleanup（仅测试节点），再在菜单二次确认卸载，核对原服务/网站/Docker 网络及证书仍正常，保留私有备份。工具不会代验收所有生产共存拓扑。
+
+### 低内存与最终门槛
+
+按上述 1c/256MiB 真机测安装、下载/解包、三内核启动、证书签发/续期、程序/内核升级与连续数据传输，记录整机 MemAvailable、CPU、RSS、memory.current/peak、swap 和 OOM 日志。已有 resource_matrix 仅提供 18–60 秒 cgroup 对照，整机长测至少数小时并另行记录；超过预算或 OOM 就不能宣称该规格支持三协议同时部署。不要在验收时擅自调整全局 sysctl、IPv6、swap 或防火墙。
+
+所有必验项目均通过、失败恢复可复现、私密产物审计通过后再评估正式 v0.4.0。当前允许冻结候选进入测试，PR #1 保持 Draft，不合并 main、不创建 RC5 或正式 Release。

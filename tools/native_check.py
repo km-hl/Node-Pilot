@@ -49,6 +49,12 @@ def main():
             atomic_json(config, generate(n))
             cores.check(n, config)
             print(protocol, "official native config check OK")
+            if protocol == 'reality':
+                for family, target in ((4, '8.8.4.4:443'), (6, '[2001:4860:4860::8844]:443')):
+                    n['reality']['target'] = target
+                    atomic_json(config, generate(n))
+                    cores.check(n, config)
+                    print('reality pinned IPv'+str(family), 'independent SNI official native config check OK')
         n = new_node("reality", "self target check", "8.8.8.8", port=14443, sni="example.com")
         n["reality"] = dict(private_key=private, public_key=public, uuid=str(uuid.uuid4()),
                             target="127.0.0.1:18003", server_names=[n["sni"]], short_id=secrets.token_hex(8),

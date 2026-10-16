@@ -179,6 +179,19 @@ def owned_unit(text, expected):
     return text == expected or (expected == RENEW_TIMER and text == LEGACY_RENEW_TIMER)
 
 
+def assert_renew_owned(units):
+    """Check both renewal units before any uninstall/recovery mutation."""
+    for name, content in (("nodepilot-renew.service", RENEW_SERVICE), ("nodepilot-renew.timer", RENEW_TIMER)):
+        path = Path(units) / name
+        if path.is_symlink() or (path.exists() and (not path.is_file() or not owned_unit(path.read_text(), content))):
+            raise PilotError('续期单元不是本项目创建，保留事务。')
+        loaded = run(['systemctl', 'show', name, '-p', 'FragmentPath', '--value'])
+        if loaded and (not path.exists() or loaded != str(path)):
+            raise PilotError('已加载的续期单元来自外部路径，拒绝操作。')
+        if run(['systemctl', 'show', name, '-p', 'DropInPaths', '--value']):
+            raise PilotError('续期单元存在外部 drop-in，拒绝操作。')
+
+
 def preflight_program(root):
     """Validate every manifest before deleting the first program file."""
     app = root / "app"
@@ -273,12 +286,7 @@ def uninstall(manager, root=Path("/opt/nodepilot"), launcher=Path("/usr/local/bi
         raise PilotError("程序目录缺少所有权标记，拒绝卸载。")
     if launcher.is_symlink() or not launcher.is_file() or launcher.read_text() != LAUNCHER:
         raise PilotError("管理命令不是本项目创建，拒绝删除。")
-    for name, content in (("nodepilot-renew.service", RENEW_SERVICE), ("nodepilot-renew.timer", RENEW_TIMER)):
-        path = units / name
-        if path.is_symlink() or (path.exists() and not owned_unit(path.read_text(),content)):
-            raise PilotError("证书续期单元不是本项目创建。")
-        if path.exists() and run(["systemctl", "show", name, "-p", "DropInPaths", "--value"]):
-            raise PilotError("续期单元存在外部 drop-in，拒绝自动卸载。")
+    assert_renew_owned(units)
     from .adoption import Adoptions
     Adoptions(manager).assert_can_uninstall()
     preflight_program(root)
@@ -329,6 +337,7 @@ def uninstall(manager, root=Path("/opt/nodepilot"), launcher=Path("/usr/local/bi
 def finish_uninstall(manager, record):
     """After this boundary rollback is unavailable; idempotently finish owned cleanup."""
     from .model import validate
+    assert_renew_owned(Path(record['units']))
     for node in record['nodes']:
         validate(node)
         manager.services.assert_owned(node,missing=True)
@@ -382,6 +391,7 @@ def recover_uninstall(manager, root=Path("/opt/nodepilot"), launcher=Path("/usr/
         return True
     if record["phase"] not in {"removing_services", "rolling_back"}:
         raise PilotError("未知卸载事务状态。")
+    assert_renew_owned(units)
     record["phase"] = "rolling_back"
     atomic_json(path, record)
     for n in record["nodes"]:

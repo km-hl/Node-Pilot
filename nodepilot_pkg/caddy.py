@@ -92,10 +92,13 @@ class Caddy:
         path = self.units / UNIT
         if path.is_symlink() or (path.exists() and path.read_text() != self.content()):
             raise PilotError("拒绝接管非本项目或已被修改的 Caddy 单元。")
+        loaded = run(["systemctl", "show", UNIT, "-p", "FragmentPath", "--value"])
+        if loaded and (not path.exists() or loaded != str(path)):
+            raise PilotError('已加载的同名 Caddy 来自外部路径，拒绝操作。')
         if path.exists():
             if run(["systemctl", "show", UNIT, "-p", "DropInPaths", "--value"]):
                 raise PilotError("NodePilot Caddy 存在外部 drop-in，拒绝接管。")
-        elif not missing or run(["systemctl", "show", UNIT, "-p", "FragmentPath", "--value"]):
+        elif not missing:
             raise PilotError("NodePilot Caddy 单元缺失或同名服务由其他位置提供。")
         return path
 

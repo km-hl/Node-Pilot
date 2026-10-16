@@ -6,6 +6,7 @@ from nodepilot_pkg.common import PilotError
 from nodepilot_pkg.targets import CANDIDATES, TargetFailure, cf_headers, exclude_cf, inspect_target, rank_targets, tls_handshake
 
 RANGES=[ipaddress.ip_network('104.16.0.0/13'),ipaddress.ip_network('2606:4700::/32')]
+CHECKS={name:{'status':'passed'} for name in ('ip_ranges','dns_cname','http_headers','tls')}
 
 
 class TargetTests(unittest.TestCase):
@@ -55,7 +56,7 @@ class TargetTests(unittest.TestCase):
     def test_default_pool_does_not_restrict_manual_domains(self):
         self.assertNotIn('www.apple.com', CANDIDATES)
         self.assertFalse(any('google' in h for h in CANDIDATES))
-        with patch('nodepilot_pkg.targets.inspect_target', return_value={'sni':'www.apple.com','median_ms':1,'spread_ms':0,'cf_screened':True}), \
+        with patch('nodepilot_pkg.targets.inspect_target', return_value={'sni':'www.apple.com','median_ms':1,'spread_ms':0,'cf_screened':True,'checks':CHECKS}), \
              patch('nodepilot_pkg.targets.cloudflare_networks', return_value=[]):
             self.assertEqual(rank_targets(['www.apple.com'])[0]['sni'], 'www.apple.com')
 
@@ -100,7 +101,7 @@ class TargetTests(unittest.TestCase):
         def check(target, sni, networks):
             if sni == "bad.example.com":
                 raise PilotError("rejected")
-            return {"sni": sni, "median_ms": 90 if sni.startswith("slow") else 10, "spread_ms": 1,'cf_screened':True}
+            return {"sni": sni, "median_ms": 90 if sni.startswith("slow") else 10, "spread_ms": 1,'cf_screened':True,'checks':CHECKS}
         with patch("nodepilot_pkg.targets.cloudflare_networks", return_value=[]), \
              patch("nodepilot_pkg.targets.inspect_target", side_effect=check):
             ranked = rank_targets(["slow.example.com", "bad.example.com", "fast.example.com"])
@@ -159,6 +160,28 @@ class TargetTests(unittest.TestCase):
         self.assertFalse(result['cf_screened']);self.assertEqual(result['checks']['ip_ranges']['status'],'unknown')
         self.assertIn('非完整 CNAME',result['checks']['dns_cname']['scope'])
 
+    def test_single_boolean_cannot_authorize_automatic_recommendation(self):
+        with patch('nodepilot_pkg.targets.cloudflare_networks',return_value=RANGES), \
+             patch('nodepilot_pkg.targets.inspect_target',return_value={'cf_screened':True}):
+            self.assertEqual(rank_targets(['origin.example.com']),[])
+
+    def test_multiple_ipv6_addresses_pin_only_successful_canonical_address(self):
+        def handshake(ip,*args):
+            if ip.endswith('8888'):raise TargetFailure('timeout','timeout')
+            return {'elapsed_ms':10,'group':'X25519'}
+        with patch('nodepilot_pkg.targets.resolve',return_value=(['2001:4860:4860::8888','2001:4860:4860::8844'],set())), \
+             patch('nodepilot_pkg.targets.tls_handshake',side_effect=handshake), \
+             patch('nodepilot_pkg.targets.http_headers',return_value=(200,{})):
+            result=inspect_target('origin.example.com:10443','sni.example.com',RANGES)
+        self.assertEqual(result['target'],'[2001:4860:4860::8844]:10443')
+        self.assertEqual(result['selected_family'],6)
+        self.assertEqual(result['target_port'],10443)
+        self.assertEqual(result['target_mode'],'pinned_ip')
+        self.assertFalse(result['dynamic_dns'])
+        self.assertEqual(result['sni'],'sni.example.com')
+        self.assertEqual(result['original_host'],'origin.example.com')
+        self.assertEqual(result['tested_target'],result['target'])
+
     def test_http_parser_rejects_partial_or_malformed_response_and_keeps_duplicate_cf_marker(self):
         from nodepilot_pkg.targets import http_headers
         import socket
@@ -176,6 +199,27 @@ class TargetTests(unittest.TestCase):
 
 
 class TargetRecheckTests(unittest.TestCase):
+    def test_dynamic_domain_has_independent_dns_status_and_never_changes_node(self):
+        import copy,tempfile
+        from pathlib import Path
+        from test_config import fixture
+        from nodepilot_pkg.targets import recheck_target,target_status
+        n=fixture();n['reality']['target']='origin.example.com:443'
+        n['reality']['selection']={'requested_target':n['reality']['target'],'target':n['reality']['target'],
+                                  'sni':n['sni'],'target_mode':'dynamic_dns','dynamic_dns':True}
+        before=copy.deepcopy(n)
+        with tempfile.TemporaryDirectory() as d,patch('nodepilot_pkg.targets.resolve',return_value=(['8.8.4.4'],set())), \
+             patch('nodepilot_pkg.targets.cloudflare_networks',return_value=RANGES), \
+             patch('nodepilot_pkg.targets.inspect_target',return_value={'cf_screened':True,'checks':CHECKS}) as scan:
+            result=recheck_target(Path(d),n)
+            self.assertIsNone(result['dns_drift']);self.assertTrue(result['dynamic_dns'])
+            self.assertIn('动态域名',result['dns_status']);self.assertIn('运行时 IP 未固定',result['status'])
+            scan.assert_called_once_with(n['reality']['target'],n['sni'],RANGES)
+            self.assertEqual(n,before)
+            n['sni']='changed.example.com'
+            self.assertNotIn('选站历史',target_status(Path(d),n))
+            self.assertNotIn('最近检测通过',target_status(Path(d),n))
+
     def recheck(self,original=None,addresses=None,selection=True):
         import copy,tempfile
         from pathlib import Path

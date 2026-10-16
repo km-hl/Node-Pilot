@@ -5,12 +5,26 @@ from pathlib import Path
 from unittest.mock import patch
 
 from nodepilot_pkg.common import PilotError
-from nodepilot_pkg.installation import LAUNCHER, RENEW_SERVICE, remove_program_files, uninstall
+from nodepilot_pkg.installation import LAUNCHER, RENEW_SERVICE, RENEW_TIMER, assert_renew_owned, remove_program_files, uninstall
 from nodepilot_pkg.manager import OWNER
 from tools.package import package
 
 
 class InstallationTests(unittest.TestCase):
+    def test_loaded_external_renewal_units_refused_with_or_without_local_file(self):
+        for present in (False,True):
+            for name in ('nodepilot-renew.service','nodepilot-renew.timer'):
+                with tempfile.TemporaryDirectory() as d:
+                    units=Path(d)
+                    if present:
+                        (units/'nodepilot-renew.service').write_text(RENEW_SERVICE)
+                        (units/'nodepilot-renew.timer').write_text(RENEW_TIMER)
+                    def command(args):
+                        return '/run/systemd/system/'+name if args[2]==name and 'FragmentPath' in args else ''
+                    with patch('nodepilot_pkg.installation.run',side_effect=command) as run:
+                        with self.assertRaisesRegex(PilotError,'外部路径'):assert_renew_owned(units)
+                    self.assertTrue(all(c.args[0][1]=='show' for c in run.call_args_list))
+
     def test_uninstall_refuses_external_renewal_dropin(self):
         with tempfile.TemporaryDirectory() as d:
             root, units = Path(d) / "program", Path(d) / "units"
@@ -21,7 +35,7 @@ class InstallationTests(unittest.TestCase):
             launcher.write_text(LAUNCHER)
             unit = units / "nodepilot-renew.service"
             unit.write_text(RENEW_SERVICE)
-            with patch("nodepilot_pkg.installation.run", return_value="/external/dropin.conf"):
+            with patch("nodepilot_pkg.installation.run", side_effect=lambda args: '/external/dropin.conf' if 'DropInPaths' in args else ''):
                 with self.assertRaises(PilotError):
                     uninstall(object(), root, launcher, units)
             self.assertEqual(unit.read_text(), RENEW_SERVICE)

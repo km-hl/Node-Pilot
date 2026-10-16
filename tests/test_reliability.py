@@ -136,6 +136,29 @@ class UninstallRecoveryTests(unittest.TestCase):
         with self.assertRaises(PilotError):
             recover_uninstall(self.m)
 
+    def test_uninstall_and_each_recovery_phase_reject_loaded_external_timer_before_mutation(self):
+        from nodepilot_pkg.common import atomic_json
+        from nodepilot_pkg.installation import RENEW_TIMER
+        unit=self.services.units/'nodepilot-renew.timer';unit.write_text(RENEW_TIMER)
+        def command(args):
+            return '/external/nodepilot-renew.timer' if args[2]=='nodepilot-renew.timer' and 'FragmentPath' in args else ''
+        self.command.side_effect=command
+        with self.assertRaisesRegex(PilotError,'外部路径'):
+            uninstall(self.m,self.program,self.launcher,self.services.units)
+        self.assertFalse((self.m.state/'uninstall.json').exists())
+        for phase in ('removing_services','rolling_back','finalizing'):
+            record={'schema':1,'phase':phase,'root':str(self.program),'launcher':str(self.launcher),
+                    'units':str(self.services.units),'nodes':self.nodes}
+            journal=self.m.state/'uninstall.json';atomic_json(journal,record);before=journal.read_bytes()
+            self.command.reset_mock()
+            with self.assertRaisesRegex(PilotError,'外部路径'):
+                recover_uninstall(self.m,self.program,self.launcher,self.services.units)
+            self.assertEqual(journal.read_bytes(),before)
+            self.assertEqual(self.m.nodes(),sorted(self.nodes,key=lambda n:n['id']))
+            self.assertTrue(all(self.services.active(n) for n in self.nodes))
+            self.assertTrue(all(c.args[0][1]=='show' for c in self.command.call_args_list))
+        self.assertEqual(unit.read_text(),RENEW_TIMER)
+
 
 if __name__ == '__main__':
     unittest.main()

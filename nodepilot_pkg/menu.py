@@ -247,7 +247,8 @@ class Menu:
     def reality_input(self, n, old):
         from .caddy import own_target
         from .system import port_free
-        from .targets import CANDIDATES, cloudflare_networks, inspect_target, rank_targets
+        from .targets import CANDIDATES, cloudflare_networks, inspect_target, rank_targets, screening_unknown
+        from .model import split_target
         previous = old if old and own_target(old) else None
         self.say("推荐：自有域名 + Caddy 自动证书 + 本机 Reality 目标。没有域名再选第三方目标。")
         domain = self.ask("自有域名（留空表示没有域名；输入 - 切换到无域名）", previous["sni"] if previous else "")
@@ -306,17 +307,43 @@ class Menu:
         else:
             n.pop("caddy", None)
             self.say("无域名：从本 VPS 检测 TLS1.3/h2/X25519/可信证书并排除 CF；网页跳转仅为质量提示。")
-            candidates = self.ask("候选域名（逗号分隔；留空使用内置；keep 保留原目标；manual 自定义 target/SNI）", "")
+            candidates = self.ask("候选域名（逗号分隔；新建留空使用内置；keep 保留原目标；manual 自定义 target/SNI）", "keep" if old and not own_target(old) else "")
             if candidates == "keep" and old and not own_target(old):
                 n["sni"] = old["sni"]
             elif candidates == "manual":
                 sni = host(self.ask("第三方客户端 SNI"), public=True)
                 target = self.ask("第三方 Reality 目标 host:port", sni + ":443")
                 selected = inspect_target(target, sni, cloudflare_networks())
-                scope='当前网段/DNS 规范名/所选 IP 响应头未见 CF 特征' if selected.get('cf_screened') is True else 'CF 筛查未完成，不能确认；请核对分项结果'
+                unknown = screening_unknown(selected)
+                scope='当前网段/DNS 规范名/所选 IP 响应头未见 CF 特征' if not unknown else 'CF 筛查未完成，不能确认'
                 self.say(f"TLS1.3/h2/X25519/证书通过；{scope}，中位时延 {selected['median_ms']} ms；{selected.get('warnings',[])}")
+                if unknown:
+                    for item in unknown:
+                        self.say('未知项目：' + item)
+                    self.say('建议重新检测或更换目标；不进入自动推荐列表。')
+                    if not self.confirm('仍要考虑采用检查不完整的目标') or not self.confirm('再次确认接受 CF 检查未知的风险'):
+                        raise PilotError('已取消未经完整检查的目标，请重新检测或更换目标。')
+                # Never pin an unverified address or let a metadata boolean bypass TLS.
+                if selected.get('certificate_verified') is not True or selected.get('checks', {}).get('tls', {}).get('status') != 'passed':
+                    raise PilotError('TLS 验证证据缺失，不能采用此目标。')
+                selected = copy.deepcopy(selected)
+                original_host, _ = split_target(target)
+                if is_ip(original_host):
+                    selected['target'] = target
+                else:
+                    mode = self.ask('目标模式：1 固定已验证 IP（推荐）  2 保留域名动态解析（高级）', '1')
+                    if mode == '2':
+                        self.say('运行时 DNS 可能变化；后续 IP 可能未经本次检测。当前通过不代表所有解析 IP 可用；DNS 状态不作固定 IP 漂移比较。')
+                        if not self.confirm('明确确认保留动态域名并接受上述风险'):
+                            raise PilotError('已取消动态域名目标。')
+                        selected.update(target=target, target_mode='dynamic_dns', dynamic_dns=True)
+                    elif mode != '1':
+                        raise PilotError('无效目标模式。')
+                self.say(f"选站摘要：SNI={sni}；原目标={target}；实际 target={selected['target']}；模式={selected['target_mode']}；本次 IP={selected['selected_ip']} IPv{selected['selected_family']}")
+                if not self.confirm('确认采用此目标（保存节点前还会确认配置变更）'):
+                    raise PilotError('已取消目标选择。')
                 n["sni"] = sni
-                r.update(target=target, server_names=[sni], selection=selected)
+                r.update(target=selected['target'], server_names=[sni], selection=selected)
                 r["xver"] = 0
             else:
                 ranked = rank_targets([host(x.strip(), True) for x in candidates.split(",")] if candidates else CANDIDATES, self.say)
