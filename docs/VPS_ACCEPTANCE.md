@@ -1,5 +1,7 @@
 # 真正 VPS 上的第一阶段验收
 
+**当前支持分级和发布门禁见 [最终发布审查](RELEASE_AUDIT.md)，GUI 操作见 [客户端验收清单](CLIENT_ACCEPTANCE.md)。** 本页是完整扩展验收计划，不要求把所有未验证平台变成本次正式支持。v0.4.0 已验收声明收窄为 Debian13/amd64/IPv4/约2GiB；下面的8个系统架构组合、256MiB整机和公网IPv6等是扩大支持范围前的补测项目，不能写成已通过。
+
 本清单并非全部通过；最新授权 RC4 Debian 13 amd64 IPv4 公网/生命周期/进程组短测见 [VPS 报告文末](VPS_TEST_REPORT.md)，[v0.2.0 报告](CADDY_VALIDATION.md) 保留历史证据。本轮同机全新 NodePilot v0.3.0 正式安装→RC4 升级、10 组真实 reboot/恢复及失败保留已通过；干净 OS、正式 v0.4.0 Release 下载升级、完整系统/arm64/公网 IPv6/GUI、自然临期长期行为及完整 256MiB 整机长测仍待执行。真实 ACME 的当前通过范围见文末2026-10-18专项；不要将配置与监听检查标为外网成功。
 
 1. 准备 1c/256MiB 实机，记录 `free -m`、架构、系统、已有服务和防火墙；另准备有 Caddy / Xray / sing-box 的测试机检查共存。

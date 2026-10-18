@@ -1,10 +1,10 @@
 # NodePilot
 
-当前为 **v0.4.0 RC4 候选**，PR 保持草稿；[RC4 验证报告](docs/RC_FOUR_VALIDATION.md) 记录手动/自动 Reality 固定 IP、动态域名风险确认、服务所有权、恢复验证及发布阻塞项。[RC3 报告](docs/RC_THREE_VALIDATION.md) 和 [RC2 报告](docs/RC_TWO_VALIDATION.md) 保留此前证据。不建议现在合并或发布稳定版。
+当前为 **v0.4.0 RC4 候选**，PR 保持草稿，尚未合并或发布。[最终发布审查](docs/RELEASE_AUDIT.md) 汇总当前门禁、支持范围、候选包与 GO 判断；[客户端验收清单](docs/CLIENT_ACCEPTANCE.md) 明确区分配置解析、官方内核实连与 GUI 未实测。[RC4 验证报告](docs/RC_FOUR_VALIDATION.md)、RC3 / RC2 报告保留历史证据。
 
 轻量 VPS 节点搭建与管理工具，当前源码 `0.4.0` 候选。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
 
-**当前状态：RC4 已在授权 Debian 13 amd64 IPv4 VPS 验证三协议公网连接、v0.3.0→RC4 本地升级、10组真实reboot/事务恢复，以及真实 ACME Staging/正式签发、续期和失败保留。** 最新 ACME 专项完成五节点/双 HTTP-01、九组故障、正式8张证书及28MiB公网数据/HTTPS，本地与VPS各254项测试通过；详见 [ACME矩阵和限制](docs/VPS_TEST_REPORT.md#rc4-真实-acme-专项2026-10-18)。此前256MiB进程组短测峰值166.2MiB，实际主机约2GiB，不能抵扣256MiB整机长测。其他系统/arm64/公网IPv6/GUI、自然临期长期行为及正式v0.4.0附件下载等仍待验收；PR继续Draft，不建议直接发布。
+**当前状态：RC4 已在授权 Debian 13 amd64 IPv4 VPS 验证三协议公网连接、v0.3.0→RC4 本地升级、10组真实reboot/事务恢复，以及真实 ACME Staging/正式签发、续期和失败保留。** ACME 专项完成五节点/双 HTTP-01、九组故障、正式8张证书及28MiB公网数据/HTTPS，当轮本地与VPS各254项测试通过；详见 [ACME矩阵和限制](docs/VPS_TEST_REPORT.md#rc4-真实-acme-专项2026-10-18)。最终审查仅修复发行审计工具和整理文档，管理器 payload 不变。256MiB进程组短测峰值166.2MiB，实际主机约2GiB，不能抵扣256MiB整机长测。其他系统/arm64/公网IPv6/GUI、自然临期长期行为及正式v0.4.0附件交付仍未验证，均不作本次已验收承诺。
 
 仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.3.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.3.0)。Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)，版本选择与接管实测见 [v0.3.0 验证记录](docs/MANAGEMENT_VALIDATION.md)。
 
@@ -32,7 +32,7 @@ bash install.sh --local
 nodepilot
 ```
 
-支持 Debian 12/13、Ubuntu 22.04/24.04，amd64/arm64，要求 systemd 正在运行，Python >=3.10。依赖按需通过系统签名软件源安装。通过 SSH 使用时需要 TTY；批量工具可用 `ssh -t`。脚本可从 `/dev/tty` 读取输入，不依赖管道 stdin。
+本次已实机验收范围为 **Debian 13 / amd64 / 公网 IPv4 / 1 CPU / 约2GiB RAM**。安装器也接受 Debian 12、Ubuntu 22.04/24.04 和 arm64，这些属于待实机验收的实验性路径，不作全部兼容保证。Ubuntu 24.04 的 CI 仅覆盖自动测试，不等同 VPS 安装、ACME 或重启验收。要求 root、正在运行的 systemd、Python >=3.10。依赖按需通过系统签名软件源安装。通过 SSH 使用时需要 TTY；批量工具可用 `ssh -t`。脚本可从 `/dev/tty` 读取输入，不依赖管道 stdin。完整分级见 [环境支持矩阵](docs/RELEASE_AUDIT.md#环境和资源支持矩阵)。
 
 仓库源码安装器与 Release 附件均绑定到本项目公开仓库；未发布对应附件时下载会安全中止。手工修改管理器源码后必须重新打包并生成安装器，不能沿用旧 SHA-256。
 
