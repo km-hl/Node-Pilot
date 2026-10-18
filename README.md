@@ -1,6 +1,6 @@
 # NodePilot
 
-当前为 **v0.4.0 RC4 候选**，PR 保持草稿，尚未合并或发布。[最终发布审查](docs/RELEASE_AUDIT.md) 汇总当前门禁、支持范围、候选包与 GO 判断；[客户端验收清单](docs/CLIENT_ACCEPTANCE.md) 明确区分配置解析、官方内核实连与 GUI 未实测。[RC4 验证报告](docs/RC_FOUR_VALIDATION.md)、RC3 / RC2 报告保留历史证据。
+当前为 **v0.4.0 RC4 候选**，尚未发布稳定版；评审、合并和 CI 实时状态见 [PR #1](https://github.com/km-hl/Node-Pilot/pull/1)。[最终发布审查](docs/RELEASE_AUDIT.md) 汇总门禁、支持范围、候选包与 GO 判断；后续执行见 [发布检查清单](docs/RELEASE_CHECKLIST.md) 和 [Release Notes 草稿](docs/RELEASE_NOTES.md)。[客户端验收清单](docs/CLIENT_ACCEPTANCE.md) 区分配置解析、官方内核实连与 GUI 未实测，RC4 / RC3 / RC2 报告保留历史证据。
 
 轻量 VPS 节点搭建与管理工具，当前源码 `0.4.0` 候选。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
 
