@@ -49,6 +49,12 @@ def main():
             atomic_json(config, generate(n))
             cores.check(n, config)
             print(protocol, "official native config check OK")
+            if protocol == 'reality':
+                for family, target in ((4, '8.8.4.4:443'), (6, '[2001:4860:4860::8844]:443')):
+                    n['reality']['target'] = target
+                    atomic_json(config, generate(n))
+                    cores.check(n, config)
+                    print('reality pinned IPv'+str(family), 'independent SNI official native config check OK')
         n = new_node("reality", "self target check", "8.8.8.8", port=14443, sni="example.com")
         n["reality"] = dict(private_key=private, public_key=public, uuid=str(uuid.uuid4()),
                             target="127.0.0.1:18003", server_names=[n["sni"]], short_id=secrets.token_hex(8),
@@ -58,8 +64,10 @@ def main():
         n["caddy"] = dict(domain=n["sni"], port=18003, certificate_mode="import", upstream="",
                           certificate=holder["tls"]["certificate"], key=holder["tls"]["key"])
         from nodepilot_pkg.common import run
-        for mode in ("import", "acme"):
+        for mode in ("import", "acme", "dns01", "selfsigned"):
             n["caddy"]["certificate_mode"] = mode
+            if mode=='dns01':
+                n['caddy']['dns']={'zone_id':'0'*32,'credential_id':'cf-'+'0'*16,'propagation_seconds':60}
             config = base / ("caddy-" + mode + ".json")
             atomic_json(config, configuration([n], base))
             run([cores.binary("caddy"), "validate", "--config", config])

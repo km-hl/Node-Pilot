@@ -17,6 +17,10 @@ def main(argv=None):
     commands.add_parser("menu", help="SSH 交互管理菜单（默认）")
     commands.add_parser("self-check", help="离线检查管理器是否能正常导入")
     commands.add_parser("renew", help="续期本项目 ACME 证书（由独立 timer 调用）")
+    p=commands.add_parser('bind-source',help='显式授权并校验 GitHub 在线更新仓库')
+    p.add_argument('repository');p.add_argument('--confirm',action='store_true')
+    p=commands.add_parser('finalize-program',help='人工核对 complete 后仅接受当前 timer 状态，仍校验全部程序证据')
+    p.add_argument('--review-timer',required=True,metavar='JOURNAL_SHA256')
     p = commands.add_parser("targets", help="在本 VPS 实测并筛选非 Cloudflare Reality 目标")
     p.add_argument("--domains", help="逗号分隔的 1–12 个候选域名；默认内置候选")
     p = commands.add_parser("render", help="离线生成服务端配置；不声称内核已验证")
@@ -27,13 +31,26 @@ def main(argv=None):
     p.add_argument("--show-secrets", action="store_true", required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command == "render":
+        if args.command=='bind-source':
+            from .common import root_required
+            from .project_update import bind_repository
+            root_required()
+            bind_repository(args.repository,confirmed=args.confirm)
+            print('已显式绑定更新仓库；后续下载仍必须通过 Release 来源与 SHA-256 校验。')
+        elif args.command=='finalize-program':
+            from .common import root_required
+            from .manager import Manager
+            from .deploy import review_complete
+            root_required()
+            review_complete(Manager(migrate_owner=False),args.review_timer)
+            print('已按人工核对的 timer 状态完成只读最终化；服务策略未改变。')
+        elif args.command == "render":
             atomic_json(args.output, generate(read_json(args.metadata)))
             print(f"配置已生成：{args.output}；需执行官方内核配置检查。")
         elif args.command == "share":
             print(display(validate(read_json(args.metadata))))
         elif args.command == "self-check":
-            from . import manager, menu, installation, project_update, deploy, adoption, importer, releases
+            from . import manager, menu, installation, project_update, deploy, adoption, importer, releases, dns_credentials, connectivity, exporters
             print(f"NodePilot {__version__} 管理器导入检查通过。")
         elif args.command == "targets":
             from .targets import rank_targets
@@ -48,7 +65,13 @@ def main(argv=None):
             from .system import supported
             supported()
             manager = Manager()
-            with manager.locked():
+            with manager.locked(migrate_owner=False):
+                from .deploy import recover_program
+                recover_program(manager=manager)
+                from .installation import recover_uninstall
+                if recover_uninstall(manager):
+                    return 0
+                manager.initialize()
                 manager.recover_core()
                 manager.recover()
                 from .adoption import Adoptions
