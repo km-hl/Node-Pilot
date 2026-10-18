@@ -602,3 +602,13 @@ python3 tools/adoption_smoke.py cleanup
 结束通过自有卸载事务清理测试安装后恢复原 v0.3.0/零节点、enabled+active timer，103 个记录文件摘要一致，x-ui/Docker 正常，测试单元/监听清理。外部 PID 因真实 reboot 改变，按文件完整性与状态核对；原始 journal/节点备份/日志保留 root 私有，不上传。
 
 未确认新的管理器 P0/P1，本轮仅更新文档、没有新增行为/依赖/协议，不更改 CHANGELOG。真实 ACME 尚未执行：缺授权域名/Zone/Token，服务器无 Certbot/global IPv6；未发起 DNS 修改或 CA 签发。固定正式 CA 的现有入口不能当作 Staging 开关。真实 CA/续期/TXT 清理/插件脱敏、干净 OS、正式 Release 下载升级、其他系统/arm64/公网 IPv6/GUI、256MiB 整机长测及安装/ACME 峰值仍待验收。**继续保留 PR #1 Draft，不合并或发布。**
+
+## RC4 真实 ACME 收尾（2026-10-18）
+
+基线d2e86ac，管理器与e4850d1相同，payload仍为645d116e5dd1ceceb4c7af3e5b372997e9de36010f9f29481e4bb46e5c2990ae。用户明确授权np-test专用子域名/Zone/Token/DNS/有限正式CA后，独立状态和临时单元完成：Staging与正式AnyTLS/HY2/Reality DNS-01、两个Caddy HTTP-01、两阶段各3次手工强制续期、Staging加速窗口下真实Caddy自动续期、单目标删除后四节点实连。链/SAN/私钥/原生配置/实际监听及外部HTTPS通过，正式用系统默认根；Staging仅用专用根、不关闭校验。产品源码未改CA或信任策略。
+
+九组真实/受控故障均保留旧证书和修订：无效Token、错误Zone、仅子进程断网、Python插件依赖不可加载、坏证书、密钥不匹配、真实签发后端口冲突启动失败、错误TXT、真实SIGTERM。错误TXT导致1条插件无法匹配的残留，被验收器按本轮ID检测并清理；不宣称产品自动清理任意第三方改动，也不将其当自然长期传播超时。SIGTERM时TXT真实创建/清理，可信恢复幂等且无pending凭据。详见 [实测矩阵与限制](VPS_TEST_REPORT.md#rc4-真实-acme-专项2026-10-18)。
+
+正式8张证书（5首次+3续期），本轮28MiB公网完整性及HTTPS通过；本地254项（6.958秒）、VPS254项（39.822秒）均无失败/跳过。精确扫描Token只存在批准root/0600凭据文件，无日志/元数据/分享/argv泄露，无orphan/pending；本机输入文件ACL已收紧。7条新A及TXT已清理，测试Token服务器副本/状态/内核/服务移除，原103个记录文件、监听/MainPID/boot ID不变。发行版Certbot/插件新增且保留，其timer关闭，原NodePilot timer保持enabled+active。
+
+未确认新的管理器P0/P1，没有需要新增回归的产品修复；只更新四份文档，不改CHANGELOG。两个专项已有真实证据，仍不解除Draft、不合并、不创建RC5或Release。公网IPv6/其他平台/GUI、默认自然临期长期行为、真实长时传播超时、干净OS/正式候选附件下载、Docker网站和256MiB整机/ACME峰值仍未验证。

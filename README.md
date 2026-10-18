@@ -4,7 +4,7 @@
 
 轻量 VPS 节点搭建与管理工具，当前源码 `0.4.0` 候选。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
 
-**当前状态：RC4 已在授权 Debian 13 amd64 VPS 验证三协议公网连接、v0.3.0 正式安装到 RC4 本地升级、10 组真实整机 reboot/事务恢复及升级失败保留。** 本轮 42MiB 数据/HTTPS 与 254 项实机测试通过，原安装和 103 个文件摘要已恢复；详见 [升级与重启专项](docs/VPS_TEST_REPORT.md#rc4-程序升级与真实重启专项2026-10-17)。此前 180 秒、256MiB 进程组峰值 166.2MiB，无 OOM；实际主机约 2GiB，不能抵扣 256MiB 整机长测。测试自签证书显式导入信任，未关闭校验；真实 ACME、正式 v0.4.0 Release 下载、其他系统/架构/公网 IPv6 和 GUI 仍待验收。PR 继续 Draft。
+**当前状态：RC4 已在授权 Debian 13 amd64 IPv4 VPS 验证三协议公网连接、v0.3.0→RC4 本地升级、10组真实reboot/事务恢复，以及真实 ACME Staging/正式签发、续期和失败保留。** 最新 ACME 专项完成五节点/双 HTTP-01、九组故障、正式8张证书及28MiB公网数据/HTTPS，本地与VPS各254项测试通过；详见 [ACME矩阵和限制](docs/VPS_TEST_REPORT.md#rc4-真实-acme-专项2026-10-18)。此前256MiB进程组短测峰值166.2MiB，实际主机约2GiB，不能抵扣256MiB整机长测。其他系统/arm64/公网IPv6/GUI、自然临期长期行为及正式v0.4.0附件下载等仍待验收；PR继续Draft，不建议直接发布。
 
 仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.3.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.3.0)。Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)，版本选择与接管实测见 [v0.3.0 验证记录](docs/MANAGEMENT_VALIDATION.md)。
 
@@ -49,7 +49,7 @@ Reality 检测分开保存官方 IP 段、系统 A/AAAA/可见规范名、所选
 菜单 8 → 5 复查时，DNS 漂移只比较匹配选站记录中的 `requested_target` 域名与当前固定 IP，客户端 SNI 单独用于 TLS/CF 检测。原目标是 IP 时显示“不适用”；明确选择的动态域名独立显示当前 DNS/本次抽测结果，不作固定 IP 漂移比较；旧节点缺少记录、记录失配或 DNS 失败时显示“未知”。IPv6 按地址值比较，多 A/AAAA 中仍包含固定 IP 就不报漂移。复查只写诊断结果，不切换 target、不改节点或服务。
 - 证书菜单：1 HTTP-01、2 Cloudflare DNS-01、3 导入 PEM、4 明确标记的 30 天测试自签名。必须匹配 SNI；不生成 `insecure=1`。自建 Caddy 也支持四种方式，DNS-01 由独立 certbot 签发 PEM，使用官方 Caddy 即可。
 - HTTP-01 必须确认全部 A/AAAA 指向本机及公网 TCP 80 可达；只检查 DNS 实际发布的地址族，IPv6 内核不可用不影响合法 IPv4-only 申请。IPv6-only 域名要求本机 IPv6 真正可用。不会停止已有 Caddy/Nginx。ACME 邮箱可留空，需要同意 CA 条款。
-- Cloudflare DNS-01 无需 TCP 80，也不要求 A/AAAA 指向 VPS。Token 限定所需 Zone 的 DNS:Edit/Zone:Read；输入 Zone ID 和传播等待时间。NodePilot 使用发行版 certbot 插件自动创建/清理 TXT、等待传播；Token 隐藏输入，存独立 0600 文件，不写入节点元数据、分享链接、命令行或单元。独立 runner 在日志写入前脱敏，并隔离 SDK 全局凭据及 certbot 配置。真实 CA/DNS 签发仍待可用域名/Token 实测。
+- Cloudflare DNS-01 无需 TCP 80，也不要求 A/AAAA 指向 VPS。Token 限定所需 Zone 的 DNS:Edit/Zone:Read；输入 Zone ID 和传播等待时间。NodePilot 使用发行版 certbot 插件自动创建/清理 TXT、等待传播；Token 隐藏输入，存独立 0600 文件，不写入节点元数据、分享链接、命令行或单元。独立 runner 在日志写入前脱敏，并隔离 SDK 全局凭据及 certbot 配置。真实 Staging/正式 DNS-01、TXT 清理、受控失败恢复和日志精确扫描已在 Debian13 IPv4 实测；自然临期与其他环境仍按验收矩阵标注。
 - 有效且域名未变的 certbot 证书优先复用，不因只改密码/端口再次申请；临期 30 天内续期。`nodepilot-renew.timer` 管理 AnyTLS/HY2 及 Caddy DNS-01 证书，成功后以新修订检查、重启/reload，失败保留旧修订。Caddy HTTP-01 仍由自身管理。菜单 10 可看详情、手动强制 certbot 续期或更换证书；强制续期受 CA 频率限制，Caddy HTTP-01 暂不提供手工强制签发。
 - HY2 可配置 salamander、认证密码、SNI、UDP 端口和带宽提示。带宽值影响拥塞控制，不能提高实际链路容量，也不等同于硬限速。
 - 只读展示 ss、内存与主机防火墙规则。**不会自动放行端口**；请在主机防火墙和云安全组自行放行准确的 TCP/UDP 端口。规则存在也不能证明公网 UDP 可达。
@@ -219,7 +219,7 @@ PY
 
 v0.2.0 已补测同样单核/192MiB/禁 swap 的冷启动组，含 Xray、两个 sing-box、共享 Caddy 和采样 Python，三协议各 8MiB、最多 4 并发及 HTTPS 全部通过。没有 OOM，但内存曾触及 192MiB 上限并发生回收压力（memory.events max=322）；这不是自然峰值或完整 256MiB 整机验收。ACME 签发/续期和长期负载仍需另测。
 
-v0.4.0 补测 256/512/1024MiB cgroup，各含单协议和三协议，共 12 组，无 OOM/无 swap。包括配置检查、重启、OpenSSL 测试证书生成和加密请求；256MiB 三协议组还执行 sing-box 官方候选下载/校验/替换启动。该组峰值触及限制、max=698，不能证明完整 256MiB 整机有足够余量。ACME 工具实际签发、整机及长测仍待验证，详见验证记录。
+v0.4.0 补测 256/512/1024MiB cgroup，各含单协议和三协议，共 12 组，无 OOM/无 swap。包括配置检查、重启、OpenSSL 测试证书生成和加密请求；256MiB 三协议组还执行 sing-box 官方候选下载/校验/替换启动。该组峰值触及限制、max=698，不能证明完整 256MiB 整机有足够余量。ACME 实际签发已在约2GiB主机通过；256MiB整机、ACME峰值及长测仍待验证，详见验证记录。
 
 ## 开发验证
 

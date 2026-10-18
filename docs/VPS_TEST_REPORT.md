@@ -217,3 +217,75 @@ VPS 最终 **254 项测试全部通过，38.529 秒，无失败/跳过**。本�
 测试驱动首次 intent 停止点未命中时自动停止；检查无 pending/节点损坏后改为在真实初始 atomic_json 返回后退出，再重跑该场景。此为私有注入器修正，没有修改产品恢复逻辑。SSH 重连期间的短暂 banner 超时在确认新 boot ID 后恢复，不计为节点错误。
 
 管理器行为没有新增修改，本轮不增加功能、不改变 CA 默认行为、不更新 CHANGELOG。未确认新的未修复 P0/P1；真实 ACME 等未验收风险仍存在，不能据此宣称没有 P0/P1。真实升级/重启结论限于上表测试场景；正式 Release 下载升级、真实 CA、其他系统/架构/公网 IPv6、GUI、Docker 网站反代、256MiB 整机长期及安装/ACME 峰值仍未验证。**PR #1 继续 Draft，不解除草稿，不合并、不创建 RC5、不发布正式 v0.4.0。**
+
+## RC4 真实 ACME 专项（2026-10-18）
+
+本节更新此前“缺域名/Token、真实 CA 未执行”的当前结论；之前各轮记录保留历史边界。用户本轮明确提供目标 Zone/Token 私有文件并授权 `np-test-*` 子域名、测试 TXT 创建/清理、Staging 和有限正式签发。域名、Zone ID、SSH 信息和原始日志不公开；没有使用其他 Zone 或接管已有业务。
+
+### 环境与隔离
+
+受测基线 `d2e86acf12992e2a8fc3b2bc1fb039f533d7c2e1`，开始与提交前核对远端相同，PR #1 Draft，原提交 CI 成功。管理器代码与 `e4850d1` 相同，payload SHA-256 仍为 `645d116e5dd1ceceb4c7af3e5b372997e9de36010f9f29481e4bb46e5c2990ae`。Debian 13 amd64、1 CPU、约 2GiB、公网 IPv4；原 v0.3.0/零节点、x-ui/Xray、Docker 和 enabled+active 续期 timer 保留。使用独立 `/var/lib` 状态/内核与 `/run` 测试单元，没有升级原安装或 reboot，也未调整全局防火墙、路由、IPv6、DNS、swap 或 sysctl。
+
+发行版包：Certbot `4.0.0-2+deb13u1`、python3-acme `4.0.0-1`、python3-certbot-dns-cloudflare `4.0.0-1`、python3-cloudflare `2.20.0-1`。三内核从官方来源下载并校验：Xray 26.3.27、sing-box 1.14.3、Caddy 2.11.7。新安装的发行版 `certbot.timer` 已关闭，不安排全局自动签发；原 NodePilot timer 不变。
+
+当前产品仍固定正式 LE Directory。Staging 仅在独立源码副本替换 certificates/caddy 的官方 Directory 及 Caddy 对应存储键，并在测试驱动的本机就绪探测和客户端显式加载官方 Staging 根；没有改生产源码、系统信任库或关闭 TLS 验证。四个根从 [LE 官方 Staging 页面](https://letsencrypt.org/docs/staging-environment/) 指向的 HTTPS PEM 获取，仅用于测试。正式阶段使用未修改生产源码，链校验与外部客户端均使用系统默认根证书。
+
+### ACME 实测矩阵
+
+| 场景 | Staging | 正式 CA | 成功标准与实际证据 |
+|---|---|---|---|
+| AnyTLS DNS-01 | 通过 | 通过 | 真实 Cloudflare/CA，完整链、SAN、私钥配对、原生配置、TCP 监听及外部 HTTPS |
+| Hysteria2 DNS-01 | 通过 | 通过 | 同上，独立客户端真实公网 QUIC/UDP 与正常 TLS 验证 |
+| Reality 自建目标 DNS-01 | 通过 | 通过 | holder/Certbot 实签，Caddy 加载，Xray Vision 外部数据与 HTTPS |
+| 两个 Caddy HTTP-01 自建目标 | 通过 | 通过 | TCP80 IPv4-only 挑战、两个独立域名/本机目标并存，真实证书与外部 Vision 客户端 |
+| 三协议手动强制续期 | 3 个通过 | 3 个通过 | 使用现有 Manager.apply(renew=True)，新证书摘要及修订不同，服务稳定；原分享参数再次外部成功 |
+| Caddy 自动续期 | 加速窗口通过 | 未加速/未等待自然窗口 | 只对一个 Staging HTTP 目标设置 renew_interval=5s、renewal_window_ratio=0.999999；真实 Caddy 自动向真实 CA 续期，其他目标证书不变，立即恢复原配置。未 Mock 时间/证书/CA。 |
+| 删除一个 HTTP-01 目标 | 通过 | 通过 | 另一目标证书摘要不变；剩余四节点均再次外部数据/HTTPS 通过 |
+| TXT 创建/传播/正常清理 | 通过 | 通过 | 两阶段首次 DNS-01 均由 Cloudflare API 观察到三个 TXT，实际固定等待20秒后真实公网 CA 验证并签发，最后 TXT 无残留 |
+| TCP80 已有占用者 | 通过（正式签发前预检） | 不向 CA 请求 | 独立测试 socket 占用80，真实 preflight 安全拒绝，占用者未被停止 |
+| Token 存储与日志 | 通过 | 通过 | root/0600 INI，隐藏输入文件；实际 Certbot/Caddy/故障日志、元数据、分享文本和 argv 精确扫描，无 Token 出现在批准凭据文件之外 |
+
+两阶段各五节点首次连接、续期后五节点连接、单目标删除后四节点连接，共 **28MiB** 公网数据 SHA-256/长度验证，逐连接再做外网 HTTPS/服务端 DNS 检查。Staging 自定义根与正式系统根证据分开，不将 Staging 成功算成正式信任成功。
+
+正式签发严格限定为 **5 次首次签发 + 3 次 DNS-01 续期 = 8 张**；私有 Certbot archive 中6张、Caddy存储2张，收尾核对一致。后续续期可能复用 CA 的有效 authorization 而不再创建 TXT，不把这种情况写成再次观察到 TXT。独立 TXT resolver 轮询未获得成功观察记录；传播证据来自 API 的实际 TXT、固定等待与真实公网 CA 验证，不虚构独立 DNS 采样结果或精确传播耗时。
+
+Caddy 加速参数依据 [该版本官方 automation 源码](https://github.com/caddyserver/caddy/blob/v2.11.7/modules/caddytls/automation.go)，仅为专用 Staging 测试配置。没有等数十天验证生产自然临期，也没有改变 NodePilot 默认30天阈值；不能将手工强制续期说成原 timer 已经自然触发。
+
+### 故障矩阵与保留行为
+
+全部故障仅在 Staging/独立测试状态执行，正式 CA 不反复注入错误。服务和证书检查使用真实内核/证书/systemd，注入位置与边界如下：
+
+| 故障 | 注入方式 | 结果 |
+|---|---|---|
+| 无效 Token | 符合格式但无效的测试值，真实 Cloudflare 拒绝 | 临时凭据清理，旧修订/证书/服务不变 |
+| 错误 Zone | 零值 Zone ID，真实 API 拒绝 | 同上，无无归属 pending Token |
+| 网络不可用 | 仅 Certbot 子进程放进独立无网络 namespace，有界超时/清理 | 主机网络不变，旧证书和监听保留，无 TXT 残留 |
+| Python Certbot/插件不可加载 | 子进程 `python3 -S` 不加载发行版 site-packages | 实际导入失败且脱敏退出，旧服务继续可用 |
+| 证书损坏 | 独立坏 PEM 导入夹具 | 原生 OpenSSL 拒绝，旧修订/证书保留 |
+| 私钥不匹配 | 新生成 EC 私钥与旧证书配对 | 原生公钥比较拒绝，旧节点可用 |
+| 实签成功但服务启动失败 | 实际 Staging 续期后，停止自有节点、用 socket 占用其端口，真实启动失败 | Certbot lineage 已更新，但实际加载的不可变旧修订/旧证书被恢复，监听健康 |
+| 错误的传播 TXT | 新专用挑战创建后刻意修改其值，真实 CA authorization 失败 | 旧证书保留；检测到1条插件无法按原值清理的残留，验收器核对本轮 record ID/名称/值后清理，没有删除其他记录 |
+| 续期中断 | 观察到真实 TXT 后向专用测试进程组发送 SIGTERM | worker退出-15，Certbot清理TXT，可信管理器恢复旧节点并重复恢复无 pending，临时 Token 清理 |
+
+传播异常是明确的错误 TXT 故障注入，不等同自然运营商长期传播超时；此区别保留。程序错误已提示核对挑战 TXT，残留由本轮验收器经 API 检测并按所有权清理，不宣称产品会自动发现/删除一切第三方改动。没有用强删 pending、关闭校验或改全局网络来通过测试。九组故障均保留旧证书/修订/实际监听，随后主要五节点已再次公网重连。
+
+### 复现入口与返回码
+
+已有 `tools/vps_smoke.py` payload 与 `tools/client_probe.py` 继续复用；私有 SSH/证书驱动只编排现有 Manager、certificates、Caddy、stage_token、systemd 和官方客户端，不进入产品包。正式路径为 `Manager.apply(node)` 创建、`Manager.apply(node, probe=False, renew=True)` 手动续期、`Manager.delete(id)` 删除；所有操作持有独立测试 state 的锁。证书链单独用真实 `openssl verify -purpose sslserver -verify_hostname ... -untrusted ...`，Staging 加专用 CAfile，正式不加；证书/私钥继续由 validate_pair 原生验证。
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 tools/client_probe.py --private-dir /path/to/private-client-artifacts --https-check
+```
+
+公网驱动在 Staging 为 TLS outbound 选择专用根，正式则移除 certificate_path 使用系统根。创建/续期/删除/清理驱动和外部成功检查均退出0；无效输入/CA错误通过现有错误路径拒绝，SIGTERM worker退出-15，再由可信管理器恢复。原始命令、退出状态、证书 serial/issuer/日期/摘要、私有日志和受控配置保留私有证据；不公开上传 Token、Zone、域名、SSH 信息、私钥或客户端 URI。
+
+### 收尾、代码与发布判断
+
+本轮本地 Debian **254 项通过（6.958秒）**、VPS **254 项通过（39.822秒）**，0 failure/error/skip；本次未在 VPS 执行 ShellCheck。产品无新增修复/行为，保持冻结，不改 CHANGELOG；所有变化仅四份验收文档，发行 payload 不变。未确认新的未修复管理器 P0/P1，不能据此保证所有环境无缺陷。
+
+Token 在服务器仅出现在7个已批准的 root/0600 凭据文件，未发现 argv、日志、节点元数据或分享输出泄露；无 orphan/pending 凭据。本机输入文件原继承普通用户组可读权限，已收紧为当前用户和 SYSTEM。结束删除服务器输入 Token、测试状态/凭据/内核/临时服务和 payload 进程；闭环私有证据压缩包故意排除 Token 凭据，证书/事务私钥不离开服务器。原安装103个记录文件摘要、原服务/监听/MainPID及 boot ID全部保持。7条本轮新建A记录及相关TXT经API确认清理；原有 DNS 记录未被操作。
+
+新增发行版 Certbot/插件保留安装，发行版 certbot.timer disabled/inactive，原 NodePilot enabled+active timer不变。receipt共18个文件，本地忽略目录与root私有目录留存，SHA-256 `f993979a1131a0316357ecba142040c481d3e4ca5bc049cb50ca0db1dc379331`，公开仓库只记录此脱敏摘要。
+
+**真实 ACME 的上述 IPv4 签发、手动续期、加速自动续期、失败恢复与清理矩阵通过；上一节真实升级及10组reboot结论保持。继续保持 PR #1 Draft，不解除草稿、不合并、不创建RC5、不发布正式版。** 公网IPv6/双栈ACME、自然临期长期续期、真实长期传播超时、其他系统/arm64/GUI、干净OS/正式v0.4.0附件下载路径、Docker网站完整拓扑及256MiB整机长期/ACME峰值仍未验证，正式发布须再按验收范围决定，不能因本轮签发通过推断全矩阵通过。
