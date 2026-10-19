@@ -1,5 +1,7 @@
 # v0.4.0 最终 Release Audit
 
+**后续状态（2026-10-19）：** PR #1 已合并；发行tag `v0.4.0` 固定指向 `6900d17c0127a18c3c876e1b28757e3a5eb17419`。原三附件重建/公开下载/Release Audit一致，[真实在线交付](VPS_TEST_REPORT.md#online-delivery-2026-10-19) 为 **ONLINE DELIVERY PASS**；无新增已确认未修复P0/P1。用户单独授权后，同一 Release ID `416519274` 原地转为 **Stable / Latest**，tag/附件未改，后续main仅更新文档，本轮未访问VPS。完整实测范围仅Debian13 / amd64 / IPv4 / 约2GiB；干净OS依赖安装、正式CA节点在线升级、其他平台/公网IPv6/GUI、256MiB整机与自然临期长期运行仍不作已验收承诺。下文为原审查/分阶段清单，保留各轮当时状态；当前说明见 [Release Notes](RELEASE_NOTES.md)。
+
 日期：2026-10-18；分支 `codex/v0.4.0-stability`，现有 [PR #1](https://github.com/km-hl/Node-Pilot/pull/1)。本轮不访问 VPS、不读取实际 Token/私钥/内部产物，不合并、不改 Draft、不创建 tag/Release 或修改正式渠道。
 
 ## 决策与版本

@@ -1,14 +1,14 @@
 # NodePilot
 
-当前为 **v0.4.0 RC4 候选**，尚未发布稳定版；评审、合并和 CI 实时状态见 [PR #1](https://github.com/km-hl/Node-Pilot/pull/1)。[最终发布审查](docs/RELEASE_AUDIT.md) 汇总门禁、支持范围、候选包与 GO 判断；后续执行见 [发布检查清单](docs/RELEASE_CHECKLIST.md) 和 [Release Notes 草稿](docs/RELEASE_NOTES.md)。[客户端验收清单](docs/CLIENT_ACCEPTANCE.md) 区分配置解析、官方内核实连与 GUI 未实测，RC4 / RC3 / RC2 报告保留历史证据。
+当前稳定版为 **[v0.4.0 Stable / Latest](https://github.com/km-hl/Node-Pilot/releases/tag/v0.4.0)**（2026-10-19 转正）。[在线交付报告](docs/VPS_TEST_REPORT.md#online-delivery-2026-10-19) 记录公开附件新装、v0.3.0→v0.4.0 在线升级和独立客户端实连；[Release Notes](docs/RELEASE_NOTES.md) 说明功能与支持边界。[最终发布审查](docs/RELEASE_AUDIT.md) 和 [发布检查清单](docs/RELEASE_CHECKLIST.md) 保留分阶段证据，[客户端验收清单](docs/CLIENT_ACCEPTANCE.md) 区分内核实连与 GUI 未实测。
 
-轻量 VPS 节点搭建与管理工具，当前源码 `0.4.0` 候选。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
+轻量 VPS 节点搭建与管理工具，当前发行版本 `0.4.0`。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
 
-**当前状态：RC4 已在授权 Debian 13 amd64 IPv4 VPS 验证三协议公网连接、v0.3.0→RC4 本地升级、10组真实reboot/事务恢复，以及真实 ACME Staging/正式签发、续期和失败保留。** ACME 专项完成五节点/双 HTTP-01、九组故障、正式8张证书及28MiB公网数据/HTTPS，当轮本地与VPS各254项测试通过；详见 [ACME矩阵和限制](docs/VPS_TEST_REPORT.md#rc4-真实-acme-专项2026-10-18)。最终审查仅修复发行审计工具和整理文档，管理器 payload 不变。256MiB进程组短测峰值166.2MiB，实际主机约2GiB，不能抵扣256MiB整机长测。其他系统/arm64/公网IPv6/GUI、自然临期长期行为及正式v0.4.0附件交付仍未验证，均不作本次已验收承诺。
+**完整实测范围仅为 Debian 13 / amd64 / 公网 IPv4 / 约2GiB RAM（1 CPU）。** 公开 v0.4.0 安装器在线新装、自动菜单、重复安装、正式 v0.3.0→v0.4.0 在线升级及重复升级通过；原节点认证、配置、证书和 timer 策略保持。独立 sing-box 客户端在六阶段完成三协议 27MiB 摘要核对及 18 次正常 HTTPS 检查，故障拒绝与受控回滚通过。既有同 payload 的真实 ACME Staging/正式签发、续期及 10 组真实 reboot 证据见 [VPS 报告](docs/VPS_TEST_REPORT.md)。在线轮为同机腾空项目路径后的新装，系统依赖已具备，TLS 使用显式信任的测试证书；不等于干净 OS 依赖部署或正式 CA 节点在线升级验证。其他系统/arm64/公网 IPv6/GUI、自然临期长期运行和 256MiB 整机仍未验收；256MiB 进程组 180 秒峰值 166.2MiB 不能替代整机验证。
 
-仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.3.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.3.0)。Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)，版本选择与接管实测见 [v0.3.0 验证记录](docs/MANAGEMENT_VALIDATION.md)。
+仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.4.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.4.0)。历史 [v0.3.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.3.0) 附件保持不变；Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)，版本选择与接管实测见 [v0.3.0 验证记录](docs/MANAGEMENT_VALIDATION.md)。
 
-v0.4.0 为候选交付，尚未发布稳定 Release；公开 main 安装命令继续提供 v0.3.0。新增 DNS-01、证书复用、卸载恢复、Reality 组检测、监听诊断和 Mihomo YAML，详见 [变更记录](CHANGELOG.md)、[审查计划](docs/VERSION_FOUR_PLAN.md) 和 [v0.4.0 验证记录](docs/VERSION_FOUR_VALIDATION.md)。候选源码可使用下方 `--local` 安装，默认不绑定在线更新源；Release 模式的 v0.4.0 下载入口只在正式发布附件后生效。
+main 安装器与 v0.4.0 Release 安装器均绑定同一固定 v0.4.0 payload URL 和 SHA-256，公开下载与真实在线交付已通过。新增 DNS-01、证书复用、卸载恢复、Reality 组检测、监听诊断和 Mihomo YAML，详见 [变更记录](CHANGELOG.md)。本地源码安装仍默认不绑定在线更新源。
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/km-hl/Node-Pilot/main/install.sh)
@@ -98,7 +98,7 @@ Caddy 聚合配置另经 `caddy validate` 检查，通过私有 Unix 套接字 r
 
 服务单元内容必须与项目生成内容一致才可停止/卸载；遇到外部修改时安全中止。程序卸载根据文件清单删除，不递归删除未知用户添加的程序文件。私有备份保留在 `/etc/nodepilot/backups/`；不卸载系统依赖，不删除其他软件的证书/服务，不改 IPv6/sysctl/全局网络参数。
 
-卸载先检查全部单元和程序清单、保存私有备份，再停服务；删除配置前失败/中断，会在下次进管理器恢复原启用/运行状态。进入 `finalizing` 后只继续项目文件清理，不能恢复成原安装；若程序已部分删除，用可信 v0.4.0 或更新源码执行 `bash install.sh --local --upgrade` 修复后续做。候选期 main 的 v0.3.0 不能恢复新事务。此过程不是原子卸载。私有备份、接管记录、凭据和事务记录保留，确认不需要后自行清理；活跃接管仍需先归还。
+卸载先检查全部单元和程序清单、保存私有备份，再停服务；删除配置前失败/中断，会在下次进管理器恢复原启用/运行状态。进入 `finalizing` 后只继续项目文件清理，不能恢复成原安装；若程序已部分删除，用可信 v0.4.0 或更新源码执行 `bash install.sh --local --upgrade` 修复后续做。历史 v0.3.0 安装器不能恢复新事务；当前 main 已为 v0.4.0。此过程不是原子卸载。私有备份、接管记录、凭据和事务记录保留，确认不需要后自行清理；活跃接管仍需先归还。
 
 恢复需要可信备份和**空节点集合**。菜单先检查全包，展示节点数量、协议、原/恢复证书模式，再请求确认；确认后按预览的文件 SHA-256 重新检查，备份改变则拒绝。全包元数据、重复 ID/端口、证书有效期/SAN/私钥配对、必要内核原生配置及 Caddy 聚合配置均先检查，再逐节点启动；损坏备份尽量在服务操作前失败。旧 v0.3 的 schema=1、没有 adoptions 字段的普通节点备份仍可恢复。
 
@@ -263,13 +263,13 @@ python3 tools/package.py --repo km-hl/Node-Pilot --tag v0.4.0
 python3 tools/release_audit.py --repo km-hl/Node-Pilot --tag v0.4.0
 ```
 
-打包只生成 `dist/nodepilot-0.4.0.tar.gz`、校验文件和带**固定附件 URL / SHA-256**的 `dist/install.sh`，不自动上传。候选包不等于已发布稳定版；将生成安装器同步到源码，提交后对比 Git HEAD。Release 必须包含 `install.sh` 附件才能在线升级。正式发布后对应入口：
+打包只生成 `dist/nodepilot-0.4.0.tar.gz`、校验文件和带**固定附件 URL / SHA-256**的 `dist/install.sh`，不自动上传。审计要求与所审查 Git HEAD 一致。现有 v0.4.0 tag 和附件保持冻结；后续发行代码变更使用新版本，不移动 tag 或覆盖旧附件。当前固定版本入口：
 
 ```bash
 bash <(curl -fsSL https://github.com/km-hl/Node-Pilot/releases/download/v0.4.0/install.sh)
 ```
 
-修改项目文件后必须重新打包和生成校验值。项目包仅含显式允许的管理器文件，不包含运行时配置、测试内核或凭据。
+修改发行代码后必须为新版本重新打包和生成校验值；文档更新不改变既有 v0.4.0 附件。项目包仅含显式允许的管理器文件，不包含运行时配置、测试内核或凭据。
 
 ## 范围与许可
 

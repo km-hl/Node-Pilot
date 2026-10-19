@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.4.0 — 候选，尚未稳定发布
+## 0.4.0 — Stable（2026-10-19）
+
+原 v0.4.0 Prerelease 原地转为 Stable / Latest，tag、发行代码和三附件不变。公开附件新装、v0.3.0→v0.4.0 在线升级、重复运行及三协议独立客户端 27MiB / 18 次 HTTPS 通过；完整实测范围仅 Debian 13 / amd64 / IPv4 / 约2GiB。详见 [在线交付报告](docs/VPS_TEST_REPORT.md#online-delivery-2026-10-19) 和 [Release Notes](docs/RELEASE_NOTES.md)。以下 RC 增量保留当时状态。
 
 RC4 收尾（不另建 RC5）：
 
