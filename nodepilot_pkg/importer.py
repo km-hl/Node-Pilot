@@ -122,11 +122,14 @@ def convert(config, core, server, keypair, adoption_id, snis=None):
             if client.get("flow") != "xtls-rprx-vision" or client.get("level", 0) != 0:
                 raise PilotError("只导入 Vision / level=0 客户端。")
             r = inbound["streamSettings"]["realitySettings"]
-            keys(r, {"show", "target", "dest", "xver", "serverNames", "privateKey", "shortIds"}, "Reality 设置")
+            keys(r, {"show", "target", "dest", "xver", "serverNames", "privateKey", "shortIds",
+                     "minClientVer", "maxClientVer", "maxTimeDiff", "mldsa65Seed",
+                     "limitFallbackUpload", "limitFallbackDownload", "fingerprint", "publicKey", "spiderX"}, "Reality 设置")
             if len(r.get("shortIds", [])) != 1 or not r.get("serverNames") or (r.get("target") and r.get("dest") and r["target"] != r["dest"]):
                 raise PilotError("Reality 目标/shortIds 不明确，拒绝丢失其他认证方式。")
             sni = host(snis[index] if snis else r["serverNames"][0])
             n = new_node("reality", f"导入 Xray {index+1}", server, inbound["port"], inbound.get("listen") or "::", sni)
+            n["core"] = "xray"
             n["adoption"] = adoption_id
             private, public = keypair(key(r["privateKey"]))
             n["reality"] = dict(mode="external", uuid=client["id"], private_key=private, public_key=public,
@@ -136,6 +139,34 @@ def convert(config, core, server, keypair, adoption_id, snis=None):
                 n["xray_sniffing"] = inbound["sniffing"]
             if config.get("policy"):
                 n["xray_policy"] = config["policy"]
+        elif inbound.get("type") == "vless":
+            keys(inbound, {"tag", "type", "listen", "listen_port", "users", "tls"}, "sing-box VLESS 入站")
+            users = inbound.get("users", [])
+            if len(users) != 1:
+                raise PilotError("当前导入要求每个入站一个认证用户。")
+            keys(users[0], {"uuid", "flow", "name"}, "VLESS 用户")
+            if users[0].get("flow") != "xtls-rprx-vision":
+                raise PilotError("只导入 xtls-rprx-vision VLESS 客户端。")
+            tls = inbound.get("tls") or {}
+            keys(tls, {"enabled", "server_name", "reality"}, "sing-box Reality TLS")
+            r = tls.get("reality") or {}
+            keys(r, {"enabled", "handshake", "private_key", "short_id", "max_time_difference"}, "sing-box Reality")
+            if tls.get("enabled") is not True or r.get("enabled") is not True:
+                raise PilotError("只导入启用 TLS Reality 的 sing-box VLESS 入站。")
+            hs = r.get("handshake") or {}
+            keys(hs, {"server", "server_port"}, "Reality 回落目标")
+            short_ids = r.get("short_id", [])
+            if len(short_ids) != 1:
+                raise PilotError("Reality short_id 不明确，拒绝丢失其他认证方式。")
+            sni = host(snis[index] if snis else tls.get("server_name", ""))
+            n = new_node("reality", f"导入 sing-box {index+1}", server, inbound["listen_port"], inbound.get("listen") or "::", sni)
+            n["adoption"] = adoption_id
+            private, public = keypair(key(r["private_key"]))
+            hs_port = hs.get("server_port", 443)
+            hs_server = hs["server"]
+            target_str = f"[{hs_server}]:{hs_port}" if ":" in hs_server and not hs_server.startswith("[") else f"{hs_server}:{hs_port}"
+            n["reality"] = dict(mode="external", uuid=users[0]["uuid"], private_key=private, public_key=public,
+                short_id=short_ids[0], server_names=[sni], target=target_str, fingerprint="chrome", xver=0)
         else:
             protocol = inbound.get("type")
             if protocol not in {"anytls", "hysteria2"}:

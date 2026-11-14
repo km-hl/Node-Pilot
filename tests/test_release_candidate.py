@@ -83,15 +83,28 @@ class HttpRC2Tests(unittest.TestCase):
         with socket.socket() as sock:
             sock.bind(('0.0.0.0',0));sock.listen(1)
             self.assertFalse(listening({'listen':'::','port':sock.getsockname()[1],'transport':'tcp'},os.getpid(),strict_family=True))
-    def test_certbot_dual_stack_rejects_before_issuance_and_checks_both(self):
+    def test_certbot_dual_stack_allowed_when_socket_capable_and_checks_both(self):
         n=fixture('anytls');n['tls']['mode']='acme'
         with patch('nodepilot_pkg.certificates.dns_matches',return_value={'8.8.8.8','2001:4860:4860::8888'}), \
              patch('nodepilot_pkg.certificates.public_ips'),patch('nodepilot_pkg.certificates.port_free') as bind, \
-             patch('nodepilot_pkg.certificates.run') as command, self.assertRaisesRegex(PilotError,'DNS-01'):
+             patch('nodepilot_pkg.system.http01_dual_stack_ready',return_value=True) as ready, \
+             patch('nodepilot_pkg.certificates.shutil.which',return_value='/usr/bin/certbot'), \
+             patch('nodepilot_pkg.common.private_dir'),patch('nodepilot_pkg.certificates.atomic_bytes'), \
+             patch('nodepilot_pkg.certificates.run') as command:
             certificates.acme(n)
         self.assertEqual([c.args[0] for c in bind.call_args_list],['0.0.0.0','::'])
         self.assertTrue(all(c.kwargs['v6only'] for c in bind.call_args_list))
-        command.assert_not_called()
+        ready.assert_called_once_with()
+        certbot_args = command.call_args.args[0]
+        self.assertIn('--standalone', certbot_args)
+        self.assertNotIn('--http-01-address', certbot_args)
+
+        with patch('nodepilot_pkg.certificates.dns_matches',return_value={'8.8.8.8','2001:4860:4860::8888'}), \
+             patch('nodepilot_pkg.certificates.public_ips'),patch('nodepilot_pkg.certificates.port_free'), \
+             patch('nodepilot_pkg.system.http01_dual_stack_ready',side_effect=PilotError('禁用 IPv6 双栈')), \
+             patch('nodepilot_pkg.certificates.run') as cmd2, self.assertRaisesRegex(PilotError,'双栈'):
+            certificates.acme(n)
+        cmd2.assert_not_called()
 
     def test_caddy_explicit_families_never_collapse_to_ipv6_wildcard(self):
         from nodepilot_pkg.caddy import configuration

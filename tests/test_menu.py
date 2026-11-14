@@ -1,8 +1,202 @@
+import io
 import unittest
 from unittest.mock import MagicMock, patch
 
 from nodepilot_pkg.menu import Menu
 from nodepilot_pkg.model import new_node, validate
+
+
+class InputDefaultTests(unittest.TestCase):
+    def menu(self, text):
+        menu = object.__new__(Menu)
+        menu.tty_read = io.StringIO(text)
+        menu.tty = io.StringIO()
+        menu.manager = MagicMock()
+        menu.ensure_core = MagicMock()
+        menu.ips = {"ipv4": "8.8.8.8", "ipv6": None}
+        return menu
+
+    def test_enter_uses_displayed_address_port_and_empty_defaults(self):
+        menu = self.menu("\r\n  \n\n")
+        self.assertEqual(menu.ask("公网分享 IP/域名", "8.8.8.8"), "8.8.8.8")
+        self.assertEqual(int(menu.ask("Caddy 本机目标端口", 8003)), 8003)
+        self.assertEqual(menu.ask("网页来源 HTTPS 域名", ""), "")
+        self.assertIn("[8.8.8.8]", menu.tty.getvalue())
+        self.assertIn("[8003]", menu.tty.getvalue())
+        self.assertIn("[留空]", menu.tty.getvalue())
+
+    def test_required_input_reprompts_without_inventing_sni(self):
+        menu = self.menu("\n  \nnode.example.com\n")
+        self.assertEqual(menu.ask("客户端 TLS SNI"), "node.example.com")
+        self.assertEqual(menu.tty.getvalue().count("客户端 TLS SNI（必填）"), 3)
+
+    def test_eof_never_accepts_a_default_or_confirms(self):
+        for operation in (lambda m: m.ask("端口", 443), lambda m: m.confirm("确认", default=True)):
+            with self.subTest(operation=operation), self.assertRaises(EOFError):
+                operation(self.menu(""))
+
+    def test_secret_enter_keeps_or_generates_without_printing_credentials(self):
+        menu = self.menu("")
+        with patch("getpass.getpass", side_effect=["", "", " chosen password "]) as hidden:
+            self.assertEqual(menu.secret("认证密码", "old credential"), "old credential")
+            generated = menu.secret("认证密码")
+            self.assertGreaterEqual(len(generated), 32)
+            self.assertEqual(menu.secret("认证密码"), " chosen password ")
+        for call in hidden.call_args_list:
+            self.assertNotIn("old credential", call.args[0])
+        self.assertNotIn(generated, menu.tty.getvalue())
+
+    def test_required_token_reprompts_and_never_generates_a_token(self):
+        menu = self.menu("")
+        with patch("getpass.getpass", side_effect=["", "  ", "operator supplied token"]), \
+             patch("nodepilot_pkg.menu.secrets.token_urlsafe") as generate:
+            self.assertEqual(menu.secret("Cloudflare API Token", required=True), "operator supplied token")
+        generate.assert_not_called()
+        self.assertNotIn("operator supplied token", menu.tty.getvalue())
+
+    def test_enter_cancels_delete_and_uninstall_at_either_confirmation(self):
+        from test_config import fixture
+        for method in ("delete", "uninstall"):
+            for text in ("\n", "y\n\n"):
+                with self.subTest(method=method, text=text):
+                    menu = self.menu(text)
+                    menu.select = lambda: fixture()
+                    with patch("nodepilot_pkg.installation.uninstall") as uninstall:
+                        getattr(menu, method)()
+                    menu.manager.delete.assert_not_called()
+                    menu.manager.locked.assert_not_called()
+                    uninstall.assert_not_called()
+
+    def test_enter_returns_from_update_and_backup_without_side_effects(self):
+        for method in ("update", "backup_restore"):
+            with self.subTest(method=method):
+                menu = self.menu("\n")
+                getattr(menu, method)()
+                self.assertEqual(menu.manager.mock_calls, [])
+                self.assertIn("[0]", menu.tty.getvalue())
+
+    def test_core_install_enter_accepts_but_explicit_n_cancels(self):
+        from nodepilot_pkg.common import PilotError
+        for answer in ("\n\n", "n\n"):
+            with self.subTest(answer=answer):
+                menu = self.menu(answer)
+                menu.manager.cores.binary.side_effect = PilotError("未安装")
+                if answer.startswith("n"):
+                    with self.assertRaisesRegex(PilotError, "已取消"):
+                        Menu.ensure_core(menu, "sing-box")
+                    menu.manager.update_core.assert_not_called()
+                else:
+                    Menu.ensure_core(menu, "sing-box")
+                    menu.manager.update_core.assert_called_once_with("sing-box", "latest")
+                    self.assertIn("[y]", menu.tty.getvalue())
+
+    def test_create_and_save_enter_accept_but_n_cancels(self):
+        from test_config import fixture
+        for operation in ("create", "edit"):
+            for answer in ("\n", "n\n"):
+                with self.subTest(operation=operation, answer=answer):
+                    n = fixture("anytls")
+                    menu = self.menu(answer)
+                    menu.memory_notice = MagicMock()
+                    menu.node_input = MagicMock(return_value=(n, False))
+                    menu.manager.get.return_value = n
+                    menu.manager.apply.return_value = n
+                    menu.create("anytls") if operation == "create" else menu.edit(n)
+                    if answer == "\n":
+                        menu.manager.apply.assert_called_once_with(n, renew=False)
+                        self.assertIn("[y]", menu.tty.getvalue())
+                    else:
+                        menu.manager.apply.assert_not_called()
+
+    def test_update_enter_accepts_checked_core_or_script(self):
+        for choice, core in (("1", "sing-box"), ("2", "caddy"), ("4", "xray"), ("3", "nodepilot")):
+            with self.subTest(core=core):
+                menu = self.menu(choice + "\n\n\n")
+                with patch("nodepilot_pkg.project_update.online_update") as online:
+                    if core == "nodepilot":
+                        with self.assertRaises(EOFError):
+                            menu.update()
+                        online.assert_called_once_with(menu.tty_read, menu.tty, "latest")
+                    else:
+                        menu.update()
+                        menu.manager.update_core.assert_called_once_with(core, "latest")
+                        online.assert_not_called()
+
+    def test_certificate_risk_consent_stays_n_but_dependency_install_defaults_y(self):
+        from nodepilot_pkg.common import PilotError
+        for choice, text in (("1", "\n\n"), ("4", "\n")):
+            with self.subTest(choice=choice):
+                menu = self.menu(text)
+                n = new_node("anytls", "test", "8.8.8.8", sni="node.example.com")
+                with patch("nodepilot_pkg.menu.run") as run, self.assertRaisesRegex(PilotError, "已取消"):
+                    menu.tls_input(n, choice=choice)
+                run.assert_not_called()
+                self.assertIn("[n]", menu.tty.getvalue())
+        menu = self.menu("\ny\n\n")
+        n = new_node("anytls", "test", "8.8.8.8", sni="node.example.com")
+        with patch("nodepilot_pkg.menu.shutil.which", return_value=None), patch("nodepilot_pkg.menu.run") as run:
+            menu.tls_input(n, choice="1")
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0].args[0], ["apt-get", "update"])
+        self.assertIn("[y]", menu.tty.getvalue())
+
+    def tls_menu(self, text):
+        menu = self.menu(text)
+        def certificate(n, old):
+            n["tls"] = {"mode": "import", "certificate": "/trusted/cert.pem", "key": "/trusted/key.pem"}
+            return False
+        menu.tls_input = certificate
+        return menu
+
+    def test_new_tls_nodes_default_sni_to_share_domain_only(self):
+        for protocol in ("anytls", "hysteria2"):
+            for server in ("node.example.com", "8.8.8.8"):
+                with self.subTest(protocol=protocol, server=server):
+                    # On an IP connection, an empty SNI must reprompt before using the supplied domain.
+                    text = server + "\n" * 5 + ("node.example.com\n" if server == "8.8.8.8" else "") + "\n" * 4
+                    menu = self.tls_menu(text)
+                    with patch("nodepilot_pkg.menu.port_free"), patch("getpass.getpass", return_value=""):
+                        n, renew = menu.node_input(protocol)
+                    self.assertEqual(n["server"], server)
+                    self.assertEqual(n["sni"], "node.example.com")
+                    self.assertFalse(renew)
+                    self.assertNotIn("obfs", n)
+                    self.assertNotIn("up_mbps", n)
+                    self.assertNotIn("down_mbps", n)
+                    validate(n)
+
+    def test_edit_enter_preserves_tls_node_settings_and_authentication(self):
+        from test_config import fixture
+        old = fixture("hysteria2", 10443)
+        old.update(up_mbps=15, down_mbps=30, obfs={"type": "salamander", "password": "x" * 32})
+        menu = self.menu("\n" * 10)
+        with patch("nodepilot_pkg.menu.port_free"), patch("getpass.getpass", return_value=""):
+            n, renew = menu.node_input("hysteria2", old)
+        self.assertEqual(n, old)
+        self.assertFalse(renew)
+
+    def test_optional_acme_email_accepts_enter_before_explicit_consent(self):
+        menu = self.menu("\ny\n")
+        n = new_node("anytls", "test", "8.8.8.8", sni="node.example.com")
+        with patch("nodepilot_pkg.menu.shutil.which", return_value="/usr/bin/certbot"), \
+             patch("nodepilot_pkg.menu.run") as run:
+            menu.tls_input(n, choice="1")
+        self.assertEqual(n["tls"]["email"], "")
+        self.assertEqual(n["tls"]["mode"], "acme")
+        run.assert_not_called()
+
+    def test_caddy_welcome_page_and_port_accept_enter(self):
+        menu = self.menu("\n".join(["node.example.com", "", "", "", "", "y", "", "", ""]) + "\n")
+        menu.manager.nodes.return_value = []
+        menu.manager.cores.keypair.return_value = ("A" * 43, "B" * 43)
+        n = new_node("reality", "test", "8.8.8.8")
+        with patch("nodepilot_pkg.system.port_free"), patch("getpass.getpass", return_value=""):
+            menu.reality_input(n, None)
+        self.assertEqual(n["caddy"]["port"], 8003)
+        self.assertEqual(n["caddy"]["upstream"], "")
+        self.assertEqual(n["caddy"]["email"], "")
+        self.assertEqual(n["reality"]["target"], "127.0.0.1:8003")
+        validate(n)
 
 
 class RealityMenuTests(unittest.TestCase):
@@ -13,7 +207,7 @@ class RealityMenuTests(unittest.TestCase):
         menu.manager.cores.keypair.return_value = ("A" * 43, "B" * 43)
         menu.ensure_core = MagicMock()
         menu.say = MagicMock()
-        menu.confirm = lambda text: True
+        menu.confirm = lambda text, default=False: True
         menu.secret = lambda *args: "auto"
         def ask(prompt, default=None):
             if prompt.startswith("自有域名"):
@@ -106,8 +300,9 @@ class RealityMenuTests(unittest.TestCase):
         self.assertEqual(r['target'],'8.8.8.8:443');self.assertEqual(n['sni'],'manual.example.com')
         self.assertEqual(selected['target_mode'],'pinned_ip');self.assertEqual(selected['selected_family'],4)
         self.assertEqual(selected['requested_target'],'origin.example.com:443')
-        config=generate(n)['inbounds'][0]['streamSettings']['realitySettings']
-        self.assertEqual(config['target'],r['target']);self.assertEqual(config['serverNames'],[n['sni']])
+        inbound = generate(n)['inbounds'][0]
+        self.assertEqual(inbound['tls']['reality']['handshake'], {'server': '8.8.8.8', 'server_port': 443})
+        self.assertEqual(inbound['tls']['server_name'], n['sni'])
 
     def test_manual_literal_ip_retains_input_and_does_not_offer_dynamic_mode(self):
         for target in ('8.8.8.8:443','[2001:4860:4860:0:0:0:0:8888]:443'):
@@ -196,7 +391,7 @@ class RealityMenuTests(unittest.TestCase):
                  'restored_mode':'import','notice':'自动续期已关闭，需要重新配置'}]}
         menu.manager.preview_restore.return_value=summary
         menu.manager.restore.return_value=['n-1']
-        def confirm(text):
+        def confirm(text, default=False):
             shown=' '.join(str(c.args[0]) for c in menu.say.call_args_list)
             self.assertIn('将恢复 1 个节点',shown);self.assertIn('anytls',shown)
             self.assertIn('acme → import',shown);self.assertIn('自动续期已关闭',shown)

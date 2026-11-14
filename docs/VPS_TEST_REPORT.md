@@ -358,3 +358,45 @@ AnyTLS/HY2使用明确标记的测试自签证书，客户端显式信任对应�
 剩余限制：同机新安装不是干净OS依赖部署证明；仅Debian13/amd64/IPv4/约2GiB；本轮证书为测试自签，未重测正式CA节点在线升级/自然临期；GUI、其他OS/arm64/公网IPv6、复杂Docker网站、256MiB整机和长期运行仍未验收。外部系统仅核对所记录静态文件、进程和监听，未冻结动态数据库或做完整业务验收。上述限制不改变本节已测在线交付PASS范围。
 
 **本轮验收完成后停止。v0.4.0仍为Prerelease，正式Latest仍为v0.3.0；没有提升Stable、覆盖tag/附件或把测试机留作v0.4.0生产部署。** 这是在线验收结束时的停止点；本节随后经单独Stable授权进行隐私审查并提交到main，不追溯改变该轮的授权或测试事实。
+
+<a id="v050-candidate-2026-11-14"></a>
+
+## v0.5.0 Pre-release 单内核、Mihomo 与 256MiB cgroup 验证（2026-11-14）
+
+本节记录 `v0.5.0` Pre-release 发布前在授权测试 VPS（Debian 13 amd64、1 CPU、`MemTotal ~2GiB`、已有 `x-ui` / `docker` / `komari-agent` / 既有零节点 `nodepilot-renew`）的**完全隔离验收**（测试路径 `/var/lib/nodepilot-verify` 与临时 `/run` / 瞬态 cgroup 单元；未覆盖 `/etc/nodepilot`、`/opt/nodepilot`、既有服务或防火墙；`v0.5.0` 保持 Pre-release，待公网在线实装/跨网联通验收后评估转正 Latest）。
+
+### 执行摘要与官方校验内核
+
+- **已下载校验官方内核（SHA-256 / ELF / 版本报告）**：`sing-box 1.14.4`、`Caddy 2.11.9`、`Mihomo v1.19.34`（`amd64-v1`）。
+- **单元与脚本测试**：Debian WSL 与 DediRock Debian 13（root）累计通过 **286 项单元测试**（`278` + `tests/test_qr.py` `8` 项，0 失败/0 跳过）、`bash -n install.sh` 与 `python3 -m compileall`。（注：远端未安装 `shellcheck`，保持原系统依赖不变，未在远端补跑 ShellCheck。）
+- **原生配置与生命周期工具**：
+  - `tools/native_check.py --download`：10 项官方原生配置检查通过（含 `sing-box` 默认 Reality、固定 IPv4/IPv6 独立 SNI、AnyTLS、HY2、Caddy 4 模式与 `self-reality`）。
+  - `tools/mihomo_check.py --download --live`：验证 `mihomo v1.19.34` 通过 `mihomo -t` 对三协议 snippet 与 `mihomo_full_yaml()`（含 `packet-encoding: xudp`、`support-x25519mlkem768: true`、HY2 `ports`/`hop-interval`）的解析，并完成 `--live` 实时回环握手与 HTTP echo 转发（`sing-box` 日志确认流量经 Reality 入站转发，非规则 DIRECT 绕过；另有前置验证 `support-x25519mlkem768: false` 亦与 `sing-box 1.14.4` 互通）。
+  - `tools/service_smoke.py`：Reality（TCP 40053）、AnyTLS（TCP 55457）、Hysteria2（UDP 40053）多协议共存、TCP/UDP 同口共存、失败回滚、单节点删除隔离、bind-source 均通过，临时状态清理。
+  - `tools/caddy_smoke.py setup/cleanup`：两个 `self`-mode Reality 节点共享 Caddy 聚合（磁盘 `caddy/config.json` 不含 `proxy_protocol`）、端口抢占回滚、双节点备份恢复与 SNI/证书变更通过，`MemoryHigh=50331648`/`MemoryMax=67108864` 与 `GODEBUG=multipathtcp=0` 由 `systemctl show` 核实，结束全部清理。
+  - `tools/target_smoke.py --local`（9 个回环场景）、`tools/http_family_smoke.py`（IPv4/IPv6/双栈高端口监听）与隔离目录 `Cores.prune(keep=2)` 通过。
+  - QR 与防火墙参考：验证纯 Python ISO 18004 二维码（23–29 行紧凑输出覆盖三协议分享链接）、`http01_dual_stack_ready() == True`（`bindv6only == 0`）以及 HY2 `mport` 只读 `iptables`/`ip6tables` DNAT `REDIRECT` 参考规则生成。
+
+### 冷 inode 1c / 256MiB / 0-Swap 四守护进程并发实测
+
+使用 `systemd-run --unit np-cgroup-verify -p CPUQuota=100% -p MemoryMax=256M -p MemorySwapMax=0 -p TasksMax=128` 在容器内冷复制 `caddy 2.11.9` 与 `sing-box 1.14.4`，同时运行 4 个服务进程（Caddy `GOMEMLIMIT=32MiB` + Reality `self`-mode + AnyTLS + Hysteria2 w/ salamander，均 `GOMAXPROCS=1`、`GOGC=50`、`GODEBUG=multipathtcp=0`），并经 `/proc/<pid>/environ` 确认环境变量；随后由组外三路并发客户端各执行 `4×1MiB`（共 **12MiB** SHA-256 核对）加密回环传输：
+
+| 进程 | `Rss` | `Pss`（按共享页实际分摊） | `Pss_Anon`（私有堆/栈） |
+|---|---:|---:|---:|
+| Caddy 2.11.9 (`self` target) | 47852 KiB | 47844 KiB | 11064 KiB |
+| sing-box Reality (`self`) | 63188 KiB | 30247 KiB | 12880 KiB |
+| sing-box AnyTLS | 62780 KiB | 29598 KiB | 12676 KiB |
+| sing-box Hysteria2 (`salamander`) | 64408 KiB | 31332 KiB | 13108 KiB |
+| **四守护进程合计** | **238228 KiB (232.64 MiB)** | **139021 KiB (135.76 MiB)** | **49728 KiB (48.56 MiB)** |
+
+- cgroup 读数（含同组内冷复制二进制产生的约 50MiB 页缓存）：`memory.current = 191262720`（`182.40 MiB`）、`memory.peak = 193028096`（**`184.09 MiB`**）、`memory.events`：`low=0 high=0 max=0 oom=0 oom_kill=0 oom_group_kill=0`。
+- 对比测试前隔离快照：`x-ui`（MainPID 632）、`docker`（MainPID 660）、`komari-agent`（MainPID 629）及监听端口 `443/1443/2881/2096/1202` 在全部测试与清理前后完全一致，`/run/systemd/system/nodepilot*` 与 `/var/lib/np-*` 无残留。
+
+### v0.5.0 仍未验证边界
+
+以下项目本次**未实测**，不能由上述结果外推宣称完成：
+1. Debian 12、Ubuntu 22.04/24.04、arm64 架构实际安装与运行。
+2. 物理 `1c / 256MiB` 整机含操作系统、SSH、apt 安装依赖及 Certbot ACME 签发/续期峰值与长期运行。
+3. 公网真实双栈域名（A + AAAA）经 Certbot `HTTP01DualNetworkedServers` 的实时 Let's Encrypt 签发与自动续期。
+4. Mihomo Party / Clash Verge Rev / v2rayN / Egern / Shadowrocket 等 GUI 客户端扫码/导入及公网跨网传输。
+5. `v0.5.0` 公网线上 `bash <(curl ...)` 一键新装、`v0.4.0 -> v0.5.0` 在线升级与外部公网客户端跨网实连（Pre-release 转正前待测）。

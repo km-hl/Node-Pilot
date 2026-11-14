@@ -23,17 +23,25 @@ def self_node(port=14443, local=18003):
 
 
 class CaddyConfigTests(unittest.TestCase):
-    def test_local_target_proxy_protocol_and_no_public_https_or_quic_listener(self):
+    def test_local_target_direct_tls_for_singbox_and_legacy_proxy_protocol_for_xray(self):
         n = self_node()
-        x = generate(n)["inbounds"][0]["streamSettings"]["realitySettings"]
-        self.assertEqual(x["target"], "127.0.0.1:18003")
-        self.assertEqual(x["xver"], 1)
+        inbound = generate(n)["inbounds"][0]
+        self.assertEqual(inbound["tls"]["reality"]["handshake"], {"server": "127.0.0.1", "server_port": 18003})
         config = configuration([n], Path("/etc/nodepilot"))
         server = config["apps"]["http"]["servers"][n["id"]]
         self.assertEqual(server["listen"], ["127.0.0.1:18003"])
         self.assertEqual(server["protocols"], ["h1", "h2"])
-        self.assertEqual(server["listener_wrappers"][0]["allow"], ["127.0.0.1/32"])
+        self.assertNotIn("listener_wrappers", server)
         self.assertEqual(config["admin"]["listen"], "unix//etc/nodepilot/caddy/admin.sock")
+
+        legacy = self_node(port=14445, local=18005)
+        legacy["core"] = "xray"
+        legacy["reality"]["xver"] = 1
+        x = generate(legacy)["inbounds"][0]["streamSettings"]["realitySettings"]
+        self.assertEqual(x["target"], "127.0.0.1:18005")
+        self.assertEqual(x["xver"], 1)
+        legacy_cfg = configuration([legacy], Path("/etc/nodepilot"))
+        self.assertEqual(legacy_cfg["apps"]["http"]["servers"][legacy["id"]]["listener_wrappers"][0]["allow"], ["127.0.0.1/32"])
 
     def test_acme_http01_email_optional_and_auto_renew_managed_by_caddy(self):
         n = self_node()

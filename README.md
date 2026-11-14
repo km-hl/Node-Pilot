@@ -1,10 +1,10 @@
 # NodePilot
 
-当前稳定版为 **[v0.4.0 Stable / Latest](https://github.com/km-hl/Node-Pilot/releases/tag/v0.4.0)**（2026-10-19 转正）。[在线交付报告](docs/VPS_TEST_REPORT.md#online-delivery-2026-10-19) 记录公开附件新装、v0.3.0→v0.4.0 在线升级和独立客户端实连；[Release Notes](docs/RELEASE_NOTES.md) 说明功能与支持边界。[最终发布审查](docs/RELEASE_AUDIT.md) 和 [发布检查清单](docs/RELEASE_CHECKLIST.md) 保留分阶段证据，[客户端验收清单](docs/CLIENT_ACCEPTANCE.md) 区分内核实连与 GUI 未实测。
+当前正式 Latest 稳定版仍为 **[v0.4.0 Stable / Latest](https://github.com/km-hl/Node-Pilot/releases/tag/v0.4.0)**（2026-10-19 转正）；当前最新版本为 **[v0.5.0 Pre-release](https://github.com/km-hl/Node-Pilot/releases/tag/v0.5.0)**（待完成 `v0.5.0` 公网在线实装/跨网联通验收后评估转正）。[在线交付报告](docs/VPS_TEST_REPORT.md#online-delivery-2026-10-19) 记录 v0.4.0 公开交付证据，[Release Notes](docs/RELEASE_NOTES.md) 与 [变更记录](CHANGELOG.md) 说明功能与支持边界。[最终发布审查](docs/RELEASE_AUDIT.md) 和 [发布检查清单](docs/RELEASE_CHECKLIST.md) 保留分阶段证据，[客户端验收清单](docs/CLIENT_ACCEPTANCE.md) 区分内核实连与 GUI 未实测。
 
-轻量 VPS 节点搭建与管理工具，当前发行版本 `0.4.0`。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 Xray / sing-box / Caddy，无 Web 管理后台。
+轻量 VPS 节点搭建与管理工具，当前版本 `0.5.0`（Pre-release；公开 Latest 稳定版为 `0.4.0`）。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 **sing-box**（新三协议默认单内核）/ **Caddy**（可选 Xray 兼容旧节点），无 Web 管理后台。
 
-**完整实测范围仅为 Debian 13 / amd64 / 公网 IPv4 / 约2GiB RAM（1 CPU）。** 公开 v0.4.0 安装器在线新装、自动菜单、重复安装、正式 v0.3.0→v0.4.0 在线升级及重复升级通过；原节点认证、配置、证书和 timer 策略保持。独立 sing-box 客户端在六阶段完成三协议 27MiB 摘要核对及 18 次正常 HTTPS 检查，故障拒绝与受控回滚通过。既有同 payload 的真实 ACME Staging/正式签发、续期及 10 组真实 reboot 证据见 [VPS 报告](docs/VPS_TEST_REPORT.md)。在线轮为同机腾空项目路径后的新装，系统依赖已具备，TLS 使用显式信任的测试证书；不等于干净 OS 依赖部署或正式 CA 节点在线升级验证。其他系统/arm64/公网 IPv6/GUI、自然临期长期运行和 256MiB 整机仍未验收；256MiB 进程组 180 秒峰值 166.2MiB 不能替代整机验证。
+**v0.4.0 完整公网验收范围为 Debian 13 / amd64 / 公网 IPv4 / 约2GiB RAM（1 CPU）；v0.5.0 目前已完成 Debian 13 amd64 隔离 root/systemd、256MiB 4进程 cgroup（Pss 135.76MiB、峰值 184.09MiB、max=0/oom=0）及 Mihomo v1.19.34 本地回环实连验证，公网在线安装及跨网实连待专项验收。** 其他系统/arm64/公网 IPv6/真实双栈公网 HTTP-01/GUI 扫描导入及 256MiB 物理整机仍未验收，详见 [VPS 报告](docs/VPS_TEST_REPORT.md)。
 
 仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.4.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.4.0)。历史 [v0.3.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.3.0) 附件保持不变；Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)，版本选择与接管实测见 [v0.3.0 验证记录](docs/MANAGEMENT_VALIDATION.md)。
 
@@ -42,22 +42,22 @@ nodepilot
 
 - Reality 默认建议 TCP 443，AnyTLS 建议 TCP 8443，HY2 建议 UDP 443。始终先查占用；TCP 和 UDP 同一端口号可以共存。
 - 自动生成 UUID、密码、x25519 和 shortId；可输入自己的参数。Reality 私钥不出现在分享链接中。
-- Reality 默认询问自有域名：提供域名时采用 **Caddy 证书 + 本机目标**，SNI、serverNames、证书域名一致；本机目标只监听 127.0.0.1，Xray 使用 PROXY protocol v1 转发。Caddy 可反向代理用户指定 HTTPS 网站，默认欢迎页减少资源消耗。无域名时才选第三方：通过 OpenSSL 实测三次可信证书/SNI、TLS 1.3、h2 和实际 X25519 组，按中位时延及波动排序；排除检测到的 CF。HTTP 跳转、403 等仅显示质量警告，不关闭证书校验。分 IPv4/IPv6 测最多各三个地址，失败继续其他 IP，保留未测/失败记录；手动与自动默认固定到本次验证的 IP，原输入另存，SNI 独立。手动高级选项可明确确认保留动态域名；CF 分项未知列出原因，默认建议重测，强制采用须两次确认。旧节点不会因升级自动换目标。详见 [Reality 流程](docs/REALITY_FLOW.md)。
+- Reality 默认询问自有域名：提供域名时采用 **Caddy 证书 + 本机目标**，SNI、serverNames、证书域名一致；本机目标只监听 127.0.0.1。0.5.0 起新建 Reality 默认使用 **sing-box 单内核** 直连 Caddy TLS（无需 `proxy_protocol` / `listener_wrappers`），保留已有/接管 `core=xray` 节点的 `xver=1` 兼容。Caddy 可反向代理用户指定 HTTPS 网站，默认欢迎页减少资源消耗。无域名时才选第三方：通过 OpenSSL 实测三次可信证书/SNI、TLS 1.3、h2、实际 X25519 组及非阻塞 `X25519MLKEM768` 探测，按中位时延及波动排序；排除检测到的 CF。HTTP 跳转、403 等仅显示质量警告，不关闭证书校验。分 IPv4/IPv6 测最多各三个地址，失败继续其他 IP，保留未测/失败记录；手动与自动默认固定到本次验证的 IP，原输入另存，SNI 独立。手动高级选项可明确确认保留动态域名；CF 分项未知列出原因，默认建议重测，强制采用须两次确认。旧节点不会因升级自动换目标。详见 [Reality 流程](docs/REALITY_FLOW.md)。
 
 Reality 检测分开保存官方 IP 段、系统 A/AAAA/可见规范名、所选 IP 的 HTTP 响应头，以及 TLS1.3/X25519/h2/证书结果。HTTP 超时、拒绝连接、证书错误或无效响应头意味着 CF 头检查**未知**，即使 TLS 可用也不进入自动排名；301/302/403/404 的有效响应头仍能检查 CF 特征，不将状态码直接视为 TLS 失败。`cf_screened` 仅表示当前范围的检查完成，不能证明完全不使用 Cloudflare；系统规范名也不是完整 CNAME 链审计，未测地址另列。Google/Apple 不回到默认列表。
 
 菜单 8 → 5 复查时，DNS 漂移只比较匹配选站记录中的 `requested_target` 域名与当前固定 IP，客户端 SNI 单独用于 TLS/CF 检测。原目标是 IP 时显示“不适用”；明确选择的动态域名独立显示当前 DNS/本次抽测结果，不作固定 IP 漂移比较；旧节点缺少记录、记录失配或 DNS 失败时显示“未知”。IPv6 按地址值比较，多 A/AAAA 中仍包含固定 IP 就不报漂移。复查只写诊断结果，不切换 target、不改节点或服务。
 - 证书菜单：1 HTTP-01、2 Cloudflare DNS-01、3 导入 PEM、4 明确标记的 30 天测试自签名。必须匹配 SNI；不生成 `insecure=1`。自建 Caddy 也支持四种方式，DNS-01 由独立 certbot 签发 PEM，使用官方 Caddy 即可。
-- HTTP-01 必须确认全部 A/AAAA 指向本机及公网 TCP 80 可达；只检查 DNS 实际发布的地址族，IPv6 内核不可用不影响合法 IPv4-only 申请。IPv6-only 域名要求本机 IPv6 真正可用。不会停止已有 Caddy/Nginx。ACME 邮箱可留空，需要同意 CA 条款。
+- HTTP-01 必须确认全部 A/AAAA 指向本机及公网 TCP 80 可达；只检查 DNS 实际发布的地址族，IPv6 内核不可用不影响合法 IPv4-only 申请。IPv6-only 域名要求本机 IPv6 真正可用。0.5.0 在 `/proc/sys/net/ipv6/bindv6only == 0` 的双栈主机上由 Certbot `HTTP01DualNetworkedServers` 支持双栈 HTTP-01（尚未经公网双栈域名实签）。不会停止已有 Caddy/Nginx。ACME 邮箱可留空，需要同意 CA 条款。
 - Cloudflare DNS-01 无需 TCP 80，也不要求 A/AAAA 指向 VPS。Token 限定所需 Zone 的 DNS:Edit/Zone:Read；输入 Zone ID 和传播等待时间。NodePilot 使用发行版 certbot 插件自动创建/清理 TXT、等待传播；Token 隐藏输入，存独立 0600 文件，不写入节点元数据、分享链接、命令行或单元。独立 runner 在日志写入前脱敏，并隔离 SDK 全局凭据及 certbot 配置。真实 Staging/正式 DNS-01、TXT 清理、受控失败恢复和日志精确扫描已在 Debian13 IPv4 实测；自然临期与其他环境仍按验收矩阵标注。
 - 有效且域名未变的 certbot 证书优先复用，不因只改密码/端口再次申请；临期 30 天内续期。`nodepilot-renew.timer` 管理 AnyTLS/HY2 及 Caddy DNS-01 证书，成功后以新修订检查、重启/reload，失败保留旧修订。Caddy HTTP-01 仍由自身管理。菜单 10 可看详情、手动强制 certbot 续期或更换证书；强制续期受 CA 频率限制，Caddy HTTP-01 暂不提供手工强制签发。
-- HY2 可配置 salamander、认证密码、SNI、UDP 端口和带宽提示。带宽值影响拥塞控制，不能提高实际链路容量，也不等同于硬限速。
-- 只读展示 ss、内存与主机防火墙规则。**不会自动放行端口**；请在主机防火墙和云安全组自行放行准确的 TCP/UDP 端口。规则存在也不能证明公网 UDP 可达。
-- 确认统一使用 y/n，支持 Y/N，错误输入会重新提示；危险操作默认 n，删除、卸载、接管和归还仍需两次确认。
-- 菜单 14 只检查当前/最新稳定版本，不下载安装或重启；菜单 9 可安装/更新指定版本。首次按需安装内核也可选版本。
-- 菜单 13 检查、导入和接管现有独立 Xray/sing-box，也可归还原服务。默认保留原服务，只有预检全部通过且两次确认后才切换，详细范围见下文。
-- 节点列表显示 SNI/target、监听、证书状态和最近测试；服务检查结合 systemd Result/退出状态/重启次数及 MainPID 拥有的实际 TCP/UDP socket。修改前展示不含秘密的摘要并确认，提醒旧客户端链接可能失效。菜单 8 可做本机 Reality 代理 HTTPS 测试，始终单独标注公网未验证。
-- 菜单 10 导出私有 Mihomo YAML，三协议字段按官方格式编码，保持 `skip-cert-verify: false`；自签名须在客户端导入信任。旧 Clash/不支持 AnyTLS 的客户端不能据此获得协议支持。
+- HY2 可配置 salamander、认证密码、SNI、UDP 端口、可选多端口跳跃（`mport` + `hop_interval`）和带宽提示。带宽值影响拥塞控制，不能提高实际链路容量，也不等同于硬限速。
+- 只读展示 ss、内存与主机 `iptables`/`ip6tables` 诊断，并按节点生成可复制的放行及 HY2 `mport` DNAT `REDIRECT` 参考规则。**不会自动放行或修改防火墙**；请在主机防火墙和云安全组自行放行准确的 TCP/UDP 端口。规则存在也不能证明公网 UDP 可达。
+- 确认统一使用 y/n，支持 Y/N，错误输入会重新提示。0.5.0 起：回车统一采用方括号中的默认值；`[留空]` 表示可省略，密码回车保留原值或自动生成；主菜单回车退出，子菜单回车返回。新建流程中域名冲突、公网 IP 校验、端口格式与占用在输入阶段就地重问，菜单列表支持编号或节点 ID 选择，新建节点支持自动序号后缀默认名；TTY/环境变量尊重无彩色与 `NO_COLOR`/`dumb` 终端。普通安装/更新、节点创建及保存默认 y；删除、卸载、接管/归还、CA 条款、测试自签名、目标检查未知/动态解析、恢复备份、强制续期及含凭据导出仍需明确确认。
+- 菜单 14 只检查当前/最新稳定版本，不下载安装或重启；菜单 9 排序调整为 `1 sing-box 2 Caddy 3 NodePilot 4 Xray(兼容)`，可安装/更新指定版本并在更新成功后自动裁剪旧版本（内核默认保留最近 2 个、节点修订 3 个、备份 10 份；存在未完成事务时跳过裁剪）。首次按需安装内核也可选版本。
+- 菜单 13 检查、导入和接管现有独立 Xray/sing-box，也可归还原服务；0.5.0 放宽现代 Xray `realitySettings` 兼容字段并新增 `sing-box` VLESS+Reality 入站解析。默认保留原服务，只有预检全部通过且两次确认后才切换，详细范围见下文。
+- 节点列表显示 SNI/target、监听、证书状态和最近测试；服务检查结合 systemd Result/退出状态/重启次数及 MainPID 拥有的实际 TCP/UDP socket。修改前展示不含秘密的摘要并确认，提醒旧客户端链接可能失效。菜单 8 可做本机 Reality 代理 HTTPS 测试（优先按节点内核选择 `sing-box` 或兼容 `xray`），始终单独标注公网未验证。
+- 菜单 7 支持纯 Python 终端二维码（UTF-8 半块/ASCII）输出分享链接；菜单 10 支持导出私有 Mihomo proxy 片段或完整 offline 规则 YAML（`packet-encoding: xudp`、`support-x25519mlkem768: true`、HY2 `ports`/`hop-interval`，保留 `skip-cert-verify: false`；使用私有 CIDR + `MATCH` 规则，不自动下载 `.mmdb`）。自签名须在客户端导入信任；不支持 AnyTLS 或特定字段的客户端不能据此获得协议支持。
 
 ## 数据、安全与恢复
 
@@ -209,13 +209,13 @@ PY
 
 生成标准 `vless://`、`anytls://`、`hysteria2://`，正确编码密码、query 和中文名称，IPv6 加方括号。HY2 链接不携带机器相关的带宽值。自签名必须手动在客户端导入节点 `certificate.pem` 为信任证书，URI 不能单独传递完整信任关系；不会默认关闭证书校验。
 
-导出 URI 的 sing-box 1.14.3 三协议已完成真实传输，Reality 另有 Xray 26.3.27 验证。Mihomo 1.19.32 官方内核通过三协议 YAML/IPv6/转义字段解析；其 GUI、公网连通及 v2rayN、Egern GUI 矩阵仍未验证。不要推广成所有客户端兼容。YAML 是 proxies 片段，需要合入客户端自己的分组和规则；不提供订阅服务器。
+导出 URI 的 sing-box 1.14.3（v0.4.0）与 1.14.4（v0.5.0）三协议已完成真实回环/传输检查，Xray 26.3.27 在 v0.4.0 阶段完成 Reality 验证。Mihomo v1.19.34（amd64-v1）在 Debian 13 通过三协议 snippet / 完整 offline 规则 YAML（含 `packet-encoding: xudp`、`support-x25519mlkem768: true`、HY2 `ports`/`hop-interval`）解析，并完成实时回环 `--live` 连接 `sing-box 1.14.4` Reality 隧道校验；其 GUI 客户端及 v2rayN、Egern GUI 矩阵与公网连接仍未验证，不要推广成所有客户端兼容。
 
 ## 1c / 256MiB
 
-管理层仅使用 Bash 和 Python 标准库，无 pip、数据库、Web 后台或常驻管理进程；流式下载，预编译内核，不在 VPS 编译，也不下载 geodata。服务默认 `GOMAXPROCS=1`、`GOMEMLIMIT=64MiB`、`GOGC=50`；自建目标共享一个 Caddy，软目标 32MiB，关闭 HTTP/3 以保留 HY2 UDP 端口。
+管理层仅使用 Bash 和 Python 标准库，无 pip、数据库、Web 后台或常驻管理进程；流式下载，预编译内核，不在 VPS 编译，也不下载 geodata。Go 服务单元默认注入 `GOMAXPROCS=1`、`GOMEMLIMIT=64MiB`、`GOGC=50`、`GODEBUG=multipathtcp=0` 以及 systemd cgroup 软硬上限（节点 `MemoryHigh=72M`/`MemoryMax=96M`，共享 Caddy `48M`/`64M`，关闭 HTTP/3）。
 
-`GOMEMLIMIT` 是 Go 内存软目标，**不是 RSS 硬上限**。v0.1.0 的单核、192MiB、禁 swap 冷启动三内核测试组峰值约 171.5MiB，无 OOM；该旧结果不包含新增 Caddy，不能作为 v0.2.0 四进程资源证明。实际 VPS 为 1c/2GiB；测试组不包含完整 OS、SSH 和 ACME 续期，仍不能宣称完整 256MiB 机器长期验收通过。正式服务没有自动设置硬内存限制、swap 或全局 sysctl。
+`GOMEMLIMIT` 与 `MemoryHigh` 仅是软目标或回收阈值；单进程 `MemoryMax=96M` 在极端突发下仍受实际流量与活跃连接影响。v0.5.0 在 Debian 13（amd64）补充 **1c / `MemoryMax=256M` / `MemorySwapMax=0` 冷 inode 4 守护进程并发测试**（共享 Caddy 2.11.9 + 3 个 `sing-box 1.14.4` 服务，三协议并发 `12MiB` SHA-256 传输）：4 进程合计 `Rss=238228 KiB`、**真实物理分摊 `Pss=139021 KiB (135.76 MiB)`**、`Pss_Anon=49728 KiB (48.56 MiB)`，含同组冷副本页缓存在内的 `memory.peak=184.09 MiB`，`memory.events` 的 `max`/`oom`/`oom_kill` 均为 0。此前 v0.1.0–v0.4.0 的 192MiB/256MiB 记录见下。本组测试仍不包含完整 OS、SSH、apt 安装或 ACME 签发峰值，不能宣称物理 256MiB 整机已完整长期验收。
 
 v0.2.0 已补测同样单核/192MiB/禁 swap 的冷启动组，含 Xray、两个 sing-box、共享 Caddy 和采样 Python，三协议各 8MiB、最多 4 并发及 HTTPS 全部通过。没有 OOM，但内存曾触及 192MiB 上限并发生回收压力（memory.events max=322）；这不是自然峰值或完整 256MiB 整机验收。ACME 签发/续期和长期负载仍需另测。
 
@@ -259,14 +259,14 @@ GitHub Actions 会执行上传范围/秘密指标检查、单元测试、shellch
 发布前先按 [上传隐私检查](CONTRIBUTING.md) 审查源码、提交身份、Git blob 和附件；本仓库示例：
 
 ```bash
-python3 tools/package.py --repo km-hl/Node-Pilot --tag v0.4.0
-python3 tools/release_audit.py --repo km-hl/Node-Pilot --tag v0.4.0
+python3 tools/package.py --repo km-hl/Node-Pilot --tag v0.5.0
+python3 tools/release_audit.py --repo km-hl/Node-Pilot --tag v0.5.0
 ```
 
-打包只生成 `dist/nodepilot-0.4.0.tar.gz`、校验文件和带**固定附件 URL / SHA-256**的 `dist/install.sh`，不自动上传。审计要求与所审查 Git HEAD 一致。现有 v0.4.0 tag 和附件保持冻结；后续发行代码变更使用新版本，不移动 tag 或覆盖旧附件。当前固定版本入口：
+打包只生成 `dist/nodepilot-0.5.0.tar.gz`、校验文件和带**固定附件 URL / SHA-256**的 `dist/install.sh`，不自动上传。审计要求与所审查 Git HEAD 一致。现有已发布的 v0.4.0 tag（Latest）保持冻结；`v0.5.0` 为 Pre-release，可通过固定版本入口安装（离线源码验证可用 `bash install.sh --local`）：
 
 ```bash
-bash <(curl -fsSL https://github.com/km-hl/Node-Pilot/releases/download/v0.4.0/install.sh)
+bash <(curl -fsSL https://github.com/km-hl/Node-Pilot/releases/download/v0.5.0/install.sh)
 ```
 
 修改发行代码后必须为新版本重新打包和生成校验值；文档更新不改变既有 v0.4.0 附件。项目包仅含显式允许的管理器文件，不包含运行时配置、测试内核或凭据。

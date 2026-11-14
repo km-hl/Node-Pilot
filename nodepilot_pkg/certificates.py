@@ -48,9 +48,13 @@ def acme(n, renew=False, state=Path("/etc/nodepilot")):
         bindings = http01_bindings(dns_matches(domain, public_ips()))
         for address in bindings:
             port_free(address, 80, "tcp", v6only=True)
-        if len(bindings) != 1:
-            raise PilotError('Certbot standalone 双栈监听尚不能可靠保证；请选择 Cloudflare DNS-01，或使用显式分族监听的 Caddy。未修改 IPv6/现有服务。')
-        authenticator = ['--standalone', '--preferred-challenges', 'http', '--http-01-port', '80', '--http-01-address', bindings[-1]]
+        if len(bindings) == 1:
+            authenticator = ['--standalone', '--preferred-challenges', 'http', '--http-01-port', '80', '--http-01-address', bindings[0]]
+        else:
+            from .system import http01_dual_stack_ready
+            http01_dual_stack_ready()
+            # Omitting --http-01-address lets Certbot's HTTP01DualNetworkedServers bind IPv6 dual-stack (or separate v6+v4 when bindv6only=1).
+            authenticator = ['--standalone', '--preferred-challenges', 'http', '--http-01-port', '80']
     else:
         raise PilotError('不支持的 ACME 挑战方式。')
     if not shutil.which("certbot"):

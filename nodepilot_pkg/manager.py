@@ -256,7 +256,8 @@ class Manager:
             networks = cloudflare_networks()
             for sni in n["reality"]["server_names"]:
                 inspect_target(n["reality"]["target"], sni, networks)
-                probe_reality(n["reality"]["target"], sni, proxy=bool(n["reality"].get("xver")))
+                use_proxy = n.get("core") == "xray" and bool(n["reality"].get("xver"))
+                probe_reality(n["reality"]["target"], sni, proxy=use_proxy)
         if old:
             self.services.assert_owned(old)
             self.backup()
@@ -325,6 +326,7 @@ class Manager:
         fsync_dir(path)
         if (n['protocol'] != 'reality' and n['tls']['mode'] == 'acme') or (own_target(n) and n['caddy']['certificate_mode']=='dns01'):
             certificates.event(self.state, n, '有效证书已安全安装；服务/监听通过，公网未验证')
+        self.prune(keep_revisions=3, keep_backups=10)
         return n
 
     def delete(self, node_id):
@@ -465,7 +467,35 @@ class Manager:
             pending.unlink(missing_ok=True)
             raise PilotError("内核更新失败，已恢复旧版本。") from e
         pending.unlink()
+        if hasattr(self.cores, "prune"):
+            self.cores.prune(core, keep=2)
         return destination
+
+    def prune(self, keep_revisions=3, keep_backups=10):
+        """Remove excess old revisions and backups when no node/core transaction is active."""
+        if (self.state / "core-pending.json").exists() or any((self.state / "deletions").glob("*.json")):
+            return
+        nodes_dir = self.state / "nodes"
+        if nodes_dir.is_dir():
+            for node_path in nodes_dir.iterdir():
+                if not node_path.is_dir() or node_path.is_symlink():
+                    continue
+                if (node_path / "pending.json").exists():
+                    continue
+                cur = node_path / "current"
+                active = cur.resolve() if cur.is_symlink() and cur.exists() else None
+                revs = [p for p in node_path.iterdir()
+                        if p.is_dir() and not p.is_symlink() and p.name.startswith("rev-") and p.resolve() != active]
+                revs.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+                keep_old = max(0, keep_revisions - (1 if active is not None else 0))
+                for stale in revs[keep_old:]:
+                    shutil.rmtree(stale)
+        backups_dir = self.state / "backups"
+        if backups_dir.is_dir() and keep_backups >= 1:
+            files = [p for p in backups_dir.iterdir() if p.is_file() and not p.is_symlink() and p.suffix == ".json"]
+            files.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+            for stale in files[keep_backups:]:
+                stale.unlink(missing_ok=True)
 
     def recover_core(self):
         pending = self.state / "core-pending.json"

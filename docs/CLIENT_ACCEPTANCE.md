@@ -36,3 +36,11 @@
 4. 报告按“原样 URI 导入 / 手工补字段 / 手工配置 / HTTPS 实连 / 修改同步 / 负例”分别记录 PASS、FAIL、NOT TESTED；日志截取前删除地址、密码、UUID、公钥组合、完整 URI 和私人域名。三 App × 三协议逐项执行，不把一个成功推广到全部。
 
 GUI 是本次未验收兼容范围，允许在发布说明中保留；若要公开承诺某 GUI 某版本兼容，必须先完成该版本的上述实连验收。
+
+---
+
+## v0.5.0 客户端导出与内核实连补充（2026-11-14）
+
+- **新增导出能力**：Reality YAML 增加 `packet-encoding: xudp` 与 `support-x25519mlkem768: true`；菜单 10 -> 6 支持导出零 GeoIP `.mmdb` 依赖的完整 offline Mihomo YAML（`mihomo_full_yaml`）；菜单 7 支持纯 Python ISO 18004 终端二维码；HY2 支持可选 `mport`（URI 与 Mihomo `ports`/`hop-interval`）。
+- **已验证内核客户端**：Debian 13 上官方 `sing-box 1.14.4` 完成三协议回环并发 12MiB SHA-256 传输；官方 `mihomo v1.19.34`（`amd64-v1`）通过 `mihomo -t` 校验并完成 `--live` 实时回环 HTTP echo 穿透 `sing-box 1.14.4` Reality 隧道校验（`sing-box` 日志确认非 `DIRECT` 绕过）。
+- **仍未验证**：Mihomo Party / Clash Verge Rev / v2rayN / Egern / Shadowrocket GUI 客户端的扫码导入、界面展示及公网真实跨网测试，以及 HY2 `mport` 在公网 UDP NAT 跳跃下的实际表现，继续保持未验收标注。

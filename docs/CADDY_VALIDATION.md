@@ -27,3 +27,10 @@
 用户尚未提供域名：真实 ACME 签发与临期自动续期未执行。自建目标目前用明确标记的测试证书验证，而非冒充公网可信证书。Ubuntu/arm64、GUI 客户端矩阵、真实 256MiB 整机和长时间 QUIC/ACME 并发仍待测试。
 
 NodePilot 管理器无常驻进程；共享 Caddy 仅在有自建目标时运行。删除最后一个自建 Reality、停止共享 Caddy 后，AnyTLS/HY2 再次通过外部数据与 HTTPS 检查。所有本次临时节点、单元、payload 及失败测试目录已清理；系统原有 x-ui 仍 active，原配置 SHA-256 与测试前一致，正式 NodePilot 节点集合仍为空。
+
+---
+
+## v0.5.0 单内核迁移增量验证（2026-11-14）
+
+- **Debian 13 amd64 隔离验证**：在同台授权 Debian 13 VPS 上使用官方下载校验的 `sing-box 1.14.4` 与 `caddy 2.11.9` 完成 `tools/caddy_smoke.py setup/cleanup`（两个 `self`-mode `sing-box` Reality 节点共享 `nodepilot-caddy.service`，核对磁盘 `caddy/config.json` 已无 `proxy_protocol`，端口冲突回滚、单节点删除、证书备份/恢复与 SNI/证书修改均通过）及 `tools/http_family_smoke.py`（IPv4/IPv6/双栈高端口监听通过）。
+- **低内存 4 守护进程 cgroup 测试**：`CPUQuota=100%`、`MemoryMax=256M`、`MemorySwapMax=0` 下同组冷 inode 启动 `caddy 2.11.9` + 3 个 `sing-box 1.14.4` 服务，三协议并发 `12MiB` SHA-256 传输通过，合计 `Rss=238228 KiB`、`Pss=139021 KiB (135.76 MiB)`、`Pss_Anon=49728 KiB (48.56 MiB)`、cgroup `memory.peak=184.09 MiB`、`max=0`/`oom=0`。未重测公网双栈域名 HTTP-01 实签与物理 256MiB 整机长测。

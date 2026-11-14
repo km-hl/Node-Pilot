@@ -120,7 +120,10 @@ class Cores:
             if len(public) != len(prefix) + 32 or not public.startswith(prefix):
                 raise PilotError("无法解析 OpenSSL X25519 公钥。")
             return private, key(base64.urlsafe_b64encode(public[len(prefix):]).decode().rstrip("="))
-        args = [self.binary("xray"), "x25519"]
+        try:
+            args = [self.binary("sing-box"), "generate", "reality-keypair"]
+        except PilotError:
+            args = [self.binary("xray"), "x25519"]
         result = run(args)
         fields = {re.sub(r"[^a-z]", "", k.lower()): v.strip() for k, v in
                   re.findall(r"^([^:\n]+):\s*([A-Za-z0-9_-]+)\s*$", result, re.MULTILINE)}
@@ -128,5 +131,31 @@ class Cores:
         a = fields.get("privatekey")
         b = fields.get("publickey") or fields.get("passwordpublickey") or fields.get("password")
         if not a or not b:
-            raise PilotError("无法解析 Xray x25519 输出。")
+            raise PilotError("无法解析 Reality 密钥输出。")
         return key(a), key(b)
+
+    def prune(self, core, keep=2):
+        """Remove stale core versions beyond active current + rollback candidates."""
+        if core not in {"xray", "sing-box", "caddy"} or keep < 1:
+            return []
+        parent = self.root / core
+        if not parent.is_dir():
+            return []
+        current = parent / "current"
+        active = current.resolve() if current.is_symlink() and current.exists() else None
+        candidates = []
+        for entry in parent.iterdir():
+            if entry.name == "current" or entry.name.startswith(".") or entry.is_symlink() or not entry.is_dir():
+                continue
+            if active is not None and entry.resolve() == active:
+                continue
+            candidates.append(entry)
+        candidates.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+        removed = []
+        keep_inactive = max(0, keep - (1 if active is not None else 0))
+        for stale in candidates[keep_inactive:]:
+            shutil.rmtree(stale)
+            removed.append(stale)
+        if removed:
+            fsync_dir(parent)
+        return removed

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — Pre-release（2026-11-14）
+
+- **单内核 Reality 与 Go 1.26 加固**：新建 VLESS + Reality 默认改用 `sing-box` 单内核（`sing-box 1.14.4` 实测），`self` 自建目标直连 Caddy loopback TLS（取消 Caddy `listener_wrappers` 与 `proxy_protocol` 开销）；保留并兼容已有/接管 `core == "xray"` 节点的 `xver=1`、旧路径检测与 Modern Xray `realitySettings` 导入字段，新增 `sing-box` VLESS+Reality 入站接管支持。所有受管 systemd 服务单元注入 `Environment=GODEBUG=multipathtcp=0` 并配置 `MemoryHigh`/`MemoryMax`（节点 `72M`/`96M`，Caddy `48M`/`64M`）。
+- **Mihomo 与客户端导出增强**：Reality 导出增加 `packet-encoding: xudp` 与 `support-x25519mlkem768: true`；新增离线私有 CIDR + `MATCH` 的 `mihomo_full_yaml()`（菜单 10 -> 6 可选片段或完整配置，无需额外下载 GeoIP `.mmdb`）；`tools/mihomo_check.py --live` 在 Debian 13 对官方 `mihomo v1.19.34` 完成实时回环握手与转发校验。新增非阻塞 `targets.supports_mlkem768()` 能力探测。
+- **交互体验与终端二维码**：新增纯 Python ISO 18004（Byte / ECC-L）终端二维码模块 `nodepilot_pkg/qr.py`（菜单 7 查看分享时可选输出）；保持回车默认值、输入验证就地重试、`node_input()` 早期端口冲突重问、编号/ID 选择与自动后缀默认名、TTY/`NO_COLOR`/`dumb` 自适应样式；菜单 9 排序调整为 `1 sing-box 2 Caddy 3 NodePilot 4 Xray(兼容)`。
+- **双栈 HTTP-01、HY2 跳跃与有界清理**：`system.http01_dual_stack_ready()` 检测 `bindv6only == 0`，支持 Certbot `HTTP01DualNetworkedServers` 双栈 HTTP-01；新增 HY2 可选 `mport` / `hop_interval`、URI `mport` 编码、Mihomo `ports`/`hop-interval` 及只读可复制 `iptables`/`ip6tables` DNAT `REDIRECT` 参考规则；内核/应用更新后自动裁剪旧版本（内核留 2、修订留 3、备份留 10，存在 pending 事务时跳过）。
+- **验证状态与边界**：Debian 13 amd64 隔离验证完成（`286` 项单元测试、原生配置、`mihomo v1.19.34 --live`、`service_smoke`、`caddy_smoke`、冷 inode `1c/256MiB/0-swap` 4 守护进程并发传输峰值 `184.09 MiB` / `Pss 135.76 MiB` / `max=0` / `oom=0`）。Debian 12、Ubuntu、arm64、公网双栈域名实签、物理 256MiB 整机、GUI 客户端及公网 `v0.5.0` 在线新装/跨网实连仍待验收；`v0.5.0` 保持 Pre-release（`v0.4.0` 仍为 Latest）。
+
 ## 0.4.0 — Stable（2026-10-19）
 
 原 v0.4.0 Prerelease 原地转为 Stable / Latest，tag、发行代码和三附件不变。公开附件新装、v0.3.0→v0.4.0 在线升级、重复运行及三协议独立客户端 27MiB / 18 次 HTTPS 通过；完整实测范围仅 Debian 13 / amd64 / IPv4 / 约2GiB。详见 [在线交付报告](docs/VPS_TEST_REPORT.md#online-delivery-2026-10-19) 和 [Release Notes](docs/RELEASE_NOTES.md)。以下 RC 增量保留当时状态。

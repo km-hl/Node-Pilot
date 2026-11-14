@@ -10,8 +10,9 @@ nodepilot                   Python 入口
 nodepilot_pkg/
   common.py                 私有文件、原子写入、命令边界
   model.py                  schema=1 元数据、输入约束
-  config.py / share.py      纯配置生成和分享链接
-  system.py / download.py   OS、端口、公网 IP、校验下载
+  config.py / share.py      纯配置生成、分享链接与 Mihomo/二维码适配
+  exporters.py / qr.py      Mihomo 片段与完整离线配置、纯 Python 终端二维码
+  system.py / download.py   OS、端口、公网 IP、只读防火墙参考与校验下载
   cores.py                  官方内核、版本与架构检查
   certificates.py           证书导入、自签名、certbot HTTP-01
   caddy.py                  自建 Reality 目标、共享 Caddy、配置校验与重载
@@ -30,7 +31,7 @@ docs/                       规范、验证记录、VPS 验收清单
 
 Reality：reality.uuid、private_key、public_key、short_id、server_names、target、fingerprint。私钥仅用于服务端配置，分享只含公钥。TLS：password、tls.mode / certificate / key；HY2 另可含 obfs、up_mbps、down_mbps。
 
-Reality 新增 reality.mode（self / external；旧记录缺省 external）。self 使用 caddy.domain / port / certificate_mode（acme / import）/ email（可选）/ upstream（可选）及导入证书路径；target 必须精确为本机 127.0.0.1:caddy.port，SNI、domain 与唯一 serverNames 相同。external 的 reality.selection 记录测量时间、中位时延与波动，不代表长期可用或真实联通证明。schema 保持 1，旧节点不自动迁移。
+Reality 新增 reality.mode（self / external；旧记录缺省 external）。0.5.0 起新建 Reality 默认 `core="sing-box"`（`tls.reality.handshake` 与 `max_time_difference="1m"`），`self` 使用 caddy.domain / port / certificate_mode（acme / import）/ email（可选）/ upstream（可选）及导入证书路径；target 必须精确为本机 127.0.0.1:caddy.port，SNI、domain 与唯一 serverNames 相同且不再启用 `proxy_protocol`（仅 legacy/接管 `core="xray"` `self` 节点保留 `xver=1`）。external 的 reality.selection 记录测量时间、中位时延、波动与可选 `mlkem768` 探测，不代表长期可用或真实联通证明。HY2 可选 `mport`（端口跳跃范围）与 `hop_interval`。schema 保持 1，旧节点不自动迁移。
 
 所有运行时目录 0700、文件 0600；元数据包含认证秘密，不是公开节点清单。公网 IP 探测失败时手动输入，不回退到本机私网地址。端口冲突按 TCP/UDP 区分；TCP 与 UDP 443 可以共存。
 
@@ -46,4 +47,10 @@ Reality 新增 reality.mode（self / external；旧记录缺省 external）。se
 
 ## 小内存原则
 
-内核使用官方预编译文件，不在 VPS 上编译。下载流式写盘、仅提取所需二进制、不下载 geodata。每节点独立进程利于隔离但增加内存；Go 设置 GOMEMLIMIT=64MiB、GOGC=50、GOMAXPROCS=1，适应一核机器。内存设置是软目标，绝不声称是硬内存上限。256MiB 机器需要实测三个内核进程的合计 RSS 和 QUIC 活跃连接占用，不自动修改 swap/sysctl/IPv6。
+内核使用官方预编译文件，不在 VPS 上编译。下载流式写盘、仅提取所需二进制、不下载 geodata。0.5.0 新建节点统一默认 `sing-box` 单内核，减少多内核冗余内存占用并注入 `GOMEMLIMIT=64MiB`、`GOGC=50`、`GOMAXPROCS=1`、`GODEBUG=multipathtcp=0` 以及 systemd cgroup 边界（节点单元 `MemoryHigh=72M`/`MemoryMax=96M`，共享 Caddy `48M`/`64M`）。`GOMEMLIMIT` 与 `MemoryHigh` 仅是软目标或回收阈值，绝不声称系统整机已满足硬限制。256MiB Debian 13 cgroup（4 进程冷 inode 并发 12MiB）测得实际 `Pss=135.76MiB`、峰值 `184.09MiB`（`max=0` / `oom=0`），仍未替代完整物理 256MiB 整机长期及 ACME 峰值验证；不自动修改 swap/sysctl/IPv6 或防火墙规则。
+
+## 版本规范复核（2026-11-14）
+
+- 官方内核复测版本：`sing-box v1.14.4`、`Caddy v2.11.9`、`Mihomo v1.19.34`（Debian 13 amd64）。
+- Reality（sing-box）与 AnyTLS、HY2 原生检查均通过 `sing-box check -c`；Mihomo `-t` 与本地 `--live` 回环检查通过 `packet-encoding: xudp`、`support-x25519mlkem768: true` 与 HY2 `ports`/`hop-interval`。
+- Certbot 4.0.0 在 `/proc/sys/net/ipv6/bindv6only == 0` 下通过 `HTTP01DualNetworkedServers` 支持双栈 HTTP-01（省略 `--http-01-address`）。

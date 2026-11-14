@@ -55,7 +55,7 @@ def setup():
     m.initialize()
     source = Cores(ROOT / ".test-tools/cores")
     # ProtectHome=true and /run may be noexec: use a private /var/lib subtree.
-    for name in ("xray", "sing-box", "caddy"):
+    for name in ("sing-box", "caddy"):
         original = source.binary(name)
         version = read_json(original.parent / "verified.json")["version"]
         destination = private_dir(state / "cores" / name / (version + "-" + secrets.token_hex(4)))
