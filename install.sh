@@ -3,8 +3,8 @@
 set -Eeuo pipefail
 umask 077
 
-PAYLOAD_URL='https://github.com/km-hl/Node-Pilot/releases/download/v0.4.0/nodepilot-0.4.0.tar.gz'
-PAYLOAD_SHA256='645d116e5dd1ceceb4c7af3e5b372997e9de36010f9f29481e4bb46e5c2990ae'
+PAYLOAD_URL='https://github.com/km-hl/Node-Pilot/releases/download/v0.5.0/nodepilot-0.5.0.tar.gz'
+PAYLOAD_SHA256='963f698c7bc219b4ccd6afa31651e9f34f13890db0de320ce89e3f75067bb5d8'
 LOCAL=0
 UPGRADE=0
 for arg in "$@"; do

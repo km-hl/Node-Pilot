@@ -1,5 +1,6 @@
 """Plain text SSH TUI. All input comes from /dev/tty, including curl pipelines."""
 import copy
+import ipaddress
 import os
 import secrets
 import shutil
@@ -10,9 +11,10 @@ from pathlib import Path
 from .common import PilotError, run
 from .cores import Cores
 from .manager import Manager
-from .model import email, host, is_ip, new_node, validate
-from .share import display
-from .system import architecture, diagnostics, existing_engines, public_ips, suggested_listen, supported
+from .model import PROTOCOLS, email, host, is_ip, new_node, validate, validate_mport
+from .share import display, share
+from .system import (architecture, conflicts, diagnostics, existing_engines, firewall_reference,
+                     port_free, public_ips, same_binding, suggested_listen, supported)
 
 
 class Menu:
@@ -28,22 +30,58 @@ class Menu:
         self.ips = public_ips()
         self.pending_profiles = []
 
+    def style(self, value, code):
+        tty = getattr(self, "tty", None)
+        if tty and hasattr(tty, "isatty") and tty.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM", "") not in {"", "dumb"}:
+            return f"\033[{code}m{value}\033[0m"
+        return value
+
     def say(self, value=""):
         print(value, file=self.tty, flush=True)
 
     def ask(self, prompt, default=None):
-        self.tty.write(prompt + (f" [{default}]" if default is not None else "") + "：")
-        self.tty.flush()
-        line = self.tty_read.readline()
-        if not line:
-            raise EOFError()
-        value = line.strip()
-        return str(default) if not value and default is not None else value
+        hint = "（必填）" if default is None else f" [{default if default != '' else '留空'}]"
+        while True:
+            self.tty.write(prompt + hint + "：")
+            self.tty.flush()
+            line = self.tty_read.readline()
+            if not line:
+                raise EOFError()
+            value = line.strip()
+            if value:
+                return value
+            if default is not None:
+                return str(default)
+            self.say("此项没有默认值，请输入后继续；Ctrl+C 可取消本次操作。")
 
-    def secret(self, prompt, current=None):
+    def ask_int(self, prompt, default=None, *, minimum=None, maximum=None, allow_empty=False):
+        while True:
+            raw = self.ask(prompt, default)
+            if allow_empty and raw == "":
+                return None
+            try:
+                value = int(raw)
+            except ValueError:
+                self.say("请输入有效整数。")
+                continue
+            if minimum is not None and value < minimum:
+                self.say(f"数值不能小于 {minimum}。")
+                continue
+            if maximum is not None and value > maximum:
+                self.say(f"数值不能大于 {maximum}。")
+                continue
+            return value
+
+    def secret(self, prompt, current=None, *, required=False):
         import getpass
-        value = getpass.getpass(prompt + ("（留空保留/自动生成）" if current else "（留空自动生成）") + "：", stream=self.tty)
-        return value or current or secrets.token_urlsafe(32)
+        hint = "（必填）" if required else "（回车保留原值）" if current else "（回车自动生成）"
+        while True:
+            value = getpass.getpass(prompt + hint + "：", stream=self.tty)
+            if value and (not required or value.strip()):
+                return value
+            if not required:
+                return current or secrets.token_urlsafe(32)
+            self.say("此项没有默认值，请输入后继续；Ctrl+C 可取消本次操作。")
 
     def confirm(self, text, default=False):
         while True:
@@ -53,21 +91,37 @@ class Menu:
             self.say("请输入 y 或 n，支持 Y/N；回车采用提示中的默认值。")
 
     def select(self):
-        self.list_nodes()
-        node_id = self.ask("节点 ID")
-        return self.manager.get(node_id)
-
-    def list_nodes(self):
-        nodes = self.manager.nodes()
+        nodes = [n for n in (self.manager.nodes() or []) if isinstance(n, dict)]
         if not nodes:
             self.say("尚无节点。")
-        for n in nodes:
+            raise PilotError("当前没有可操作节点。")
+        self.list_nodes()
+        by_id = {n["id"]: n for n in nodes}
+        default = "1" if len(nodes) == 1 else None
+        while True:
+            raw = self.ask("输入序号（1–" + str(len(nodes)) + "）或节点 ID", default)
+            if raw in by_id:
+                return self.manager.get(raw)
+            if raw.isdigit():
+                idx = int(raw)
+                if 1 <= idx <= len(nodes):
+                    return self.manager.get(nodes[idx - 1]["id"])
+            self.say("无效序号或节点 ID，请重新输入。")
+
+    def list_nodes(self):
+        nodes = [n for n in (self.manager.nodes() or []) if isinstance(n, dict)]
+        if not nodes:
+            self.say("尚无节点。")
+        for idx, n in enumerate(nodes, 1):
             state = self.manager.services.runtime(n)['state']
             from .caddy import own_target
             if own_target(n) and not self.manager.caddy.active():
                 state = "Caddy 目标未运行"
-            self.say(f"{n['id']}  {n['name']}\n  {n['protocol']} {n['listen']}:{n['port']}/{n['transport']}  {state}")
+            badge = self.style(state, "32" if state == "active" else "33")
+            self.say(f"[{idx}] {n['id']}  {n['name']}\n  {n['protocol']} ({n['core']}) {n['listen']}:{n['port']}/{n['transport']}  {badge}")
             self.say(f"  SNI：{n['sni']}" + (f"  target：{n['reality']['target']}" if n['protocol']=='reality' else ''))
+            if n.get("mport"):
+                self.say(f"  端口跳跃：UDP {n['mport']} -> {n['port']}")
             from .certificates import information
             try:
                 info = information(n,self.manager.state,self.manager.caddy.certificate_files(n) if n['protocol']=='reality' else None)
@@ -87,7 +141,7 @@ class Menu:
         try:
             self.manager.cores.binary(core)
         except PilotError:
-            if not self.confirm(f"从官方稳定版安装独立 {core} 内核（SHA-256 校验）"):
+            if not self.confirm(f"从官方稳定版安装独立 {core} 内核（SHA-256 校验）", default=True):
                 raise PilotError("已取消内核安装。")
             selected = self.choose_version(core)
             self.say("正在下载、校验并安装官方内核……")
@@ -200,13 +254,13 @@ class Menu:
             n["tls"] = {"mode": "import", "certificate": self.ask("证书绝对路径"), "key": self.ask("无口令私钥绝对路径")}
         elif choice in {'1','2'}:
             self.say('HTTP-01 要求全部 A/AAAA 指向本机且 TCP 80 可达。' if choice=='1' else 'DNS-01 只验证域名控制权，不要求 A/AAAA 指向本机；客户端分享地址仍须能访问 VPS。')
-            contact = email(self.ask("ACME 联系邮箱（可留空）"))
+            contact = email(self.ask("ACME 联系邮箱（可留空）", ""))
             if not self.confirm("确认满足所选挑战条件，并同意 Let's Encrypt 服务条款"):
                 raise PilotError("已取消证书申请。")
             dns = choice=='2'
             plugin_missing = dns and (not shutil.which('certbot') or 'dns-cloudflare' not in run(['certbot','plugins']))
             if not shutil.which("certbot") or plugin_missing:
-                if not self.confirm("通过系统签名软件源安装 certbot 依赖"):
+                if not self.confirm("通过系统签名软件源安装 certbot 依赖", default=True):
                     raise PilotError("已取消 certbot 安装。")
                 run(["apt-get", "update"], timeout=240)
                 run(["apt-get", "install", "-y", "--no-install-recommends", "certbot", *(['python3-certbot-dns-cloudflare'] if dns else [])], timeout=300)
@@ -216,8 +270,7 @@ class Menu:
                 from .dns_credentials import credential_path, stage_token, validate_settings, verify_zone
                 self.say('Token 仅授予所需 Zone 的 DNS:Edit / Zone:Read；不使用 Global API Key。凭据存储于 root 私有文件，不进入节点链接。')
                 zone = self.ask('Cloudflare Zone ID')
-                seconds = int(self.ask('DNS 传播等待秒数（10–600）','60'))
-                import getpass
+                seconds = self.ask_int('DNS 传播等待秒数（10–600）', '60', minimum=10, maximum=600)
                 profile = self.ask('复用已有凭据 ID（留空新建；只输入 cf- ID，不输入 Token）','')
                 settings = {'zone_id':zone,'propagation_seconds':seconds}
                 if profile:
@@ -227,7 +280,7 @@ class Menu:
                         credential_path(self.manager.state,profile,pending=False)
                         verify_zone(self.manager.state,settings,n['sni'])
                 else:
-                    token = getpass.getpass('Cloudflare API Token（隐藏输入）：',stream=self.tty)
+                    token = self.secret('Cloudflare API Token（隐藏输入）', required=True)
                     try:
                         with self.manager.locked():
                             settings = stage_token(self.manager.state,token,settings,n['sni'])
@@ -277,14 +330,14 @@ class Menu:
                         continue
                 else:
                     raise PilotError("未找到空闲本机目标端口，请检查监听。")
-            c["port"] = int(self.ask("Caddy 本机目标端口", suggested))
-            source = self.ask("网页来源 HTTPS 域名（留空或 - 使用本机欢迎页，节省资源）", c.get("upstream", "").removesuffix(":443"))
+            c["port"] = self.ask_int("Caddy 本机目标端口", suggested, minimum=1, maximum=65535)
+            source = self.ask("网页来源 HTTPS 域名（回车采用默认；输入 - 使用本机欢迎页，节省资源）", c.get("upstream", "").removesuffix(":443"))
             c["upstream"] = "" if source in {"", "-"} else host(source, public=True) + ":443"
             if not previous or domain != previous["sni"] or self.confirm("更换 Caddy 证书来源"):
                 choice = self.ask("Caddy 证书：1 Caddy HTTP-01（默认）  2 Cloudflare DNS-01  3 导入 PEM  4 测试自签名", "1")
                 if choice == "1":
-                    self.say("域名全部 A/AAAA 必须直指 VPS；HTTP-01 需公网 TCP 80。不停止已有网站服务，443 由 Xray 使用。")
-                    c["email"] = email(self.ask("ACME 邮箱（可留空）"))
+                    self.say("域名全部 A/AAAA 必须直指 VPS；HTTP-01 需公网 TCP 80。不停止已有网站服务，443 由节点服务使用。")
+                    c["email"] = email(self.ask("ACME 邮箱（可留空）", ""))
                     if not self.confirm("确认域名归属、DNS、TCP 80 可达，并同意 Let's Encrypt 服务条款"):
                         raise PilotError("已取消证书申请。")
                     c["certificate_mode"] = "acme"
@@ -311,7 +364,7 @@ class Menu:
             if candidates == "keep" and old and not own_target(old):
                 n["sni"] = old["sni"]
             elif candidates == "manual":
-                sni = host(self.ask("第三方客户端 SNI"), public=True)
+                sni = host(self.ask("第三方客户端 SNI", old["sni"] if old else None), public=True)
                 target = self.ask("第三方 Reality 目标 host:port", sni + ":443")
                 selected = inspect_target(target, sni, cloudflare_networks())
                 unknown = screening_unknown(selected)
@@ -340,7 +393,7 @@ class Menu:
                     elif mode != '1':
                         raise PilotError('无效目标模式。')
                 self.say(f"选站摘要：SNI={sni}；原目标={target}；实际 target={selected['target']}；模式={selected['target_mode']}；本次 IP={selected['selected_ip']} IPv{selected['selected_family']}")
-                if not self.confirm('确认采用此目标（保存节点前还会确认配置变更）'):
+                if not self.confirm('确认采用此目标（保存节点前还会确认配置变更）', default=True):
                     raise PilotError('已取消目标选择。')
                 n["sni"] = sni
                 r.update(target=selected['target'], server_names=[sni], selection=selected)
@@ -351,7 +404,7 @@ class Menu:
                     raise PilotError("没有合格的非 CF 目标；请重新提供候选域名。不会自动选择未通过检查的 SNI。")
                 for index, result in enumerate(ranked, 1):
                     self.say(f"{index}. {result['sni']}  TLS1.3/h2/X25519  {result['median_ms']} ms，波动 {result['spread_ms']} ms；{result.get('warnings',[])}")
-                index = int(self.ask("选择目标（默认当前测量时延最低）", "1"))
+                index = self.ask_int("选择目标（默认当前测量时延最低）", "1", minimum=1, maximum=len(ranked))
                 if not 1 <= index <= len(ranked):
                     raise PilotError("目标序号无效。")
                 selected = ranked[index - 1]
@@ -369,12 +422,43 @@ class Menu:
         n["reality"] = r
 
     def node_input(self, protocol, old=None):
-        self.ensure_core("xray" if protocol == "reality" else "sing-box")
+        self.ensure_core(old["core"] if old else PROTOCOLS[protocol][0])
         server = host(self.ask("公网分享 IP/域名", old["server"] if old else self.ips["ipv4"] or self.ips["ipv6"] or None), True)
-        name = self.ask("节点名称", old["name"] if old else protocol)
-        port = int(self.ask("监听端口", old["port"] if old else (8443 if protocol == "anytls" else 443)))
-        listen = self.ask("监听 IP", old["listen"] if old else suggested_listen(server, self.ips))
-        sni = (old["sni"] if old else "") if protocol == "reality" else host(self.ask("客户端 TLS SNI", old["sni"] if old else None))
+        existing = [o for o in (self.manager.nodes() or []) if isinstance(o, dict)]
+        used_names = {o.get("name") for o in existing if not old or o.get("id") != old.get("id")}
+        default_name = old["name"] if old else protocol
+        if not old and default_name in used_names:
+            suffix = 2
+            while f"{protocol}-{suffix}" in used_names:
+                suffix += 1
+            default_name = f"{protocol}-{suffix}"
+        name = self.ask("节点名称", default_name)
+        transport = PROTOCOLS[protocol][1]
+        while True:
+            port = self.ask_int("监听端口", old["port"] if old else (8443 if protocol == "anytls" else 443), minimum=1, maximum=65535)
+            listen = self.ask("监听 IP", old["listen"] if old else suggested_listen(server, self.ips))
+            try:
+                ipaddress.ip_address(listen)
+                from .caddy import own_target
+                candidate = {"id": old["id"] if old else "", "transport": transport, "port": port, "listen": listen}
+                for other in existing:
+                    if other.get("id") != candidate["id"] and conflicts(candidate, other):
+                        raise PilotError(f"端口与节点 {other['id']} 的 {other['transport']} 监听冲突。")
+                    if own_target(other) and transport == "tcp" and (port == other["caddy"]["port"] or
+                            (port == 80 and other["caddy"]["certificate_mode"] == "acme")):
+                        raise PilotError("TCP 端口由 NodePilot Caddy 目标/HTTP-01 使用。")
+                if not old or not same_binding(candidate, old) or not self.manager.services.active(old):
+                    port_free(listen, port, transport)
+                break
+            except (PilotError, ValueError) as error:
+                self.say(f"端口/监听不可用：{error}；请换用其他端口或监听地址。")
+        if protocol == "reality":
+            sni = old["sni"] if old else ""
+        else:
+            sni_default = old["sni"] if old else None
+            if sni_default is None and not is_ip(server):
+                sni_default = server
+            sni = host(self.ask("客户端 TLS SNI", sni_default))
         n = copy.deepcopy(old) if old else new_node(protocol, name, server, port, listen, sni)
         n.update(name=name, server=server, port=port, listen=listen, sni=sni)
         renew = False
@@ -390,11 +474,24 @@ class Menu:
                     n.pop("obfs", None)
                 self.say("带宽值是拥塞控制提示，不能增加实际带宽，也不等同于链路限速；留空使用内核默认。")
                 for field in ("up_mbps", "down_mbps"):
-                    value = self.ask(field, old.get(field, "") if old else "")
-                    if value:
-                        n[field] = int(value)
+                    value = self.ask_int(field, old.get(field, "") if old else "", minimum=1, maximum=100000, allow_empty=True)
+                    if value is not None:
+                        n[field] = value
                     else:
                         n.pop(field, None)
+                while True:
+                    raw_mport = self.ask("端口跳跃范围 mport（如 20000-50000，留空不启用）", old.get("mport", "") if old else "")
+                    if not raw_mport:
+                        n.pop("mport", None)
+                        n.pop("hop_interval", None)
+                        break
+                    try:
+                        n["mport"] = validate_mport(raw_mport)
+                        n["hop_interval"] = self.ask_int("端口跳跃切换间隔秒数", old.get("hop_interval", 30) if old else 30, minimum=5, maximum=3600)
+                        self.say(f"提示：服务端仍只监听 UDP {port}；请按菜单 11 参考规则在防火墙配置 {n['mport']} -> {port} REDIRECT。")
+                        break
+                    except PilotError as error:
+                        self.say(str(error))
         validate(n)
         return n, renew
 
@@ -402,7 +499,7 @@ class Menu:
         self.memory_notice()
         n, renew = self.node_input(protocol)
         self.say(f"将部署 {n['protocol']} {n['listen']}:{n['port']}/{n['transport']}，SNI={n['sni']}。")
-        if not self.confirm('确认创建节点；新 DNS 凭据仅在部署成功后正式登记'):
+        if not self.confirm('确认创建节点；新 DNS 凭据仅在部署成功后正式登记', default=True):
             return
         with self.manager.locked():
             saved = self.manager.apply(n, renew=renew)
@@ -432,7 +529,7 @@ class Menu:
         if old.get('tls') != n.get('tls') or old.get('caddy') != n.get('caddy'):
             summary.append('证书/自建目标设置已变化')
         self.say('变更摘要：\n'+ ('\n'.join(summary) or '无参数变化'))
-        if not self.confirm('应用以上变更？SNI、端口、UUID、密码或密钥变化可能使旧分享链接失效'):
+        if not self.confirm('应用以上变更？SNI、端口、UUID、密码或密钥变化可能使旧分享链接失效', default=True):
             self.say('已取消修改。')
             return
         with self.manager.locked():
@@ -452,6 +549,18 @@ class Menu:
                 backup = self.manager.delete(n["id"])
             self.say(f"已删除；含凭据的备份：{backup}")
             self.say('DNS 凭据按备份/修订/事务引用保留；菜单 10 → 7 可只读检查并确认清理孤立凭据。')
+
+    def share_menu(self):
+        """Show node credentials/share URI and optional terminal QR code."""
+        node = self.select()
+        self.say(display(node))
+        if self.confirm("在终端显示二维码", default=False):
+            from . import qr
+            compact = "utf" in (getattr(self.tty, "encoding", None) or "utf-8").lower()
+            try:
+                self.say("\n" + qr.render(share(node), compact=compact))
+            except ValueError as err:
+                self.say(f"二维码未生成：{err}")
 
     def status(self):
         n = self.select()
@@ -477,8 +586,8 @@ class Menu:
             self.say('未改动 SNI/target/认证；如需重选，请使用菜单 5 并确认链接变更。')
 
     def update(self):
-        self.say("1 安装/更新 Xray  2 安装/更新 sing-box  3 更新 NodePilot  4 安装/更新 Caddy\n5 检查全部版本更新  0 返回")
-        choice = self.ask("选择")
+        self.say("1 安装/更新 sing-box  2 安装/更新 Caddy  3 更新 NodePilot  4 安装/更新 Xray（兼容）\n5 检查全部版本更新  0 返回")
+        choice = self.ask("选择", "0")
         if choice == "0":
             return
         if choice == "5":
@@ -487,21 +596,23 @@ class Menu:
         if choice == "3":
             from .project_update import online_update
             selected = self.choose_version("nodepilot")
-            if self.confirm("从已记录的本项目 GitHub 仓库下载稳定版，校验安装器 SHA-256 后升级"):
+            if self.confirm("从已记录的本项目 GitHub 仓库下载稳定版，校验安装器 SHA-256 后升级", default=True):
                 online_update(self.tty_read, self.tty, selected)
                 raise EOFError()
             return
-        core = {"1": "xray", "2": "sing-box", "4": "caddy"}.get(choice)
+        core = {"1": "sing-box", "2": "caddy", "4": "xray"}.get(choice)
         if not core:
             raise PilotError("无效选项。")
         selected = self.choose_version(core)
-        if self.confirm(f"安装/更新官方 {core}，校验所有受影响节点并逐个重启"):
+        if self.confirm(f"安装/更新官方 {core}，校验所有受影响节点并逐个重启", default=True):
             with self.manager.locked():
                 destination = self.manager.update_core(core, selected)
             self.say(f"已安装并验证：{destination.name}")
 
     def backup_restore(self):
-        choice = self.ask("1 备份  2 恢复空目录  3 更换证书  4 证书详情  5 强制续期  6 导出 Mihomo YAML  7 DNS 凭据审计/清理")
+        choice = self.ask("1 备份  2 恢复空目录  3 更换证书  4 证书详情  5 强制续期  6 导出 Mihomo YAML  7 DNS 凭据审计/清理  0 返回", "0")
+        if choice == "0":
+            return
         if choice == "1":
             with self.manager.locked():
                 self.say(f"私有备份（含密码和私钥）：{self.manager.backup()}")
@@ -527,7 +638,7 @@ class Menu:
                 return
             n = copy.deepcopy(n)
             renew = self.tls_input(n)
-            if not self.confirm('确认更换证书来源；新 DNS 凭据在服务加载成功后登记'):
+            if not self.confirm('确认更换证书来源；新 DNS 凭据在服务加载成功后登记', default=True):
                 return
             with self.manager.locked():
                 self.manager.apply(n, renew=renew)
@@ -545,13 +656,17 @@ class Menu:
                     self.manager.apply(n,probe=False,renew=True)
                 self.say('证书已续期并安全切换。')
         elif choice == '6':
-            from .exporters import mihomo_yaml
+            from .exporters import mihomo_full_yaml, mihomo_yaml
             from .common import atomic_bytes
+            mode = self.ask("1 仅导出 proxies 片段（合入现有配置）  2 导出完整 Mihomo 客户端配置", "1")
+            if mode not in {"1", "2"}:
+                raise PilotError("无效导出类型。")
             if self.confirm('导出文件含所有节点认证凭据；请只保存到可信私有路径'):
                 destination=Path(self.ask('本机导出绝对路径'))
                 if not destination.is_absolute() or destination.is_symlink() or destination.exists():
                     raise PilotError('请输入尚不存在的绝对文件路径。')
-                atomic_bytes(destination,mihomo_yaml(self.manager.nodes()).encode())
+                content = mihomo_yaml(self.manager.nodes()) if mode == "1" else mihomo_full_yaml(self.manager.nodes())
+                atomic_bytes(destination, content.encode())
                 self.say(f'已导出私有 YAML：{destination}；实际客户端联通仍需验证。')
         elif choice == '7':
             from .dns_credentials import audit, cleanup_orphans
@@ -601,7 +716,7 @@ class Menu:
         for engine in existing_engines():
             self.say(f"发现现有内核进程：{engine['name']} (PID {engine['pid']}, {engine['service'] or '未关联 systemd 单元'})；菜单 13 可选择是否接管，默认保留。")
         while True:
-            self.say("\n================================\n      NodePilot 节点管理器\n================================")
+            self.say(self.style("\n================================\n      NodePilot 节点管理器\n================================", "1;36"))
             self.say(f"系统：{self.system}\n架构：{architecture()}\n公网 IPv4：{self.ips['ipv4'] or '未探测到'}\n公网 IPv6：{self.ips['ipv6'] or '未探测到'}")
             for core in ("xray", "sing-box"):
                 try:
@@ -620,7 +735,7 @@ class Menu:
             self.memory_notice()
             self.say("1. 安装 VLESS + Reality\n2. 安装 AnyTLS\n3. 安装 Hysteria2\n4. 查看全部节点\n5. 修改节点配置\n6. 删除指定节点\n7. 查看分享链接\n8. 服务状态/日志/重启\n9. 安装/更新内核与脚本（可选版本）\n10. 备份/恢复/证书\n11. 端口与网络诊断\n12. 卸载 NodePilot\n13. 接管/归还现有 Xray 或 sing-box\n14. 检查更新版本\n0. 退出")
             try:
-                choice = self.ask("请输入选项")
+                choice = self.ask("请输入选项", "0")
                 if choice == "0":
                     return 0
                 if choice in {"1", "2", "3"}:
@@ -632,7 +747,7 @@ class Menu:
                 elif choice == "6":
                     self.delete()
                 elif choice == "7":
-                    self.say(display(self.select()))
+                    self.share_menu()
                 elif choice == "8":
                     self.status()
                 elif choice == "9":
@@ -641,6 +756,9 @@ class Menu:
                     self.backup_restore()
                 elif choice == "11":
                     self.say(diagnostics())
+                    for node in self.manager.nodes():
+                        self.say(f"\n[{node['name']} / {node['id']}]")
+                        self.say(firewall_reference(node))
                 elif choice == "12":
                     self.uninstall()
                 elif choice == "13":

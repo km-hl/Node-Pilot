@@ -100,7 +100,7 @@ def main():
             (shadow/'__init__.py').write_text("raise RuntimeError('unverified cwd imported')")
             tty_command(['bash',str(ROOT/'install.sh'),'--local','--upgrade'],cwd=tmp)
         print('verified installer ignores shadow package in current directory OK')
-        assert run(['nodepilot','--version'])=='0.4.0'
+        assert run(['nodepilot','--version'])=='0.5.0'
         if args.legacy_source:
             print('trusted v0.3.0 installer -> candidate schema upgrade OK')
         text = tty_command(["nodepilot", "menu"], replies=("invalid", "0"))

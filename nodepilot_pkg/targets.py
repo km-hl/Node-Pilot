@@ -206,6 +206,24 @@ def tls_handshake(ip, port, sni, timeout=4):
             "tls": "TLSv1.3", "alpn": "h2", "certificate_verified": True}
 
 
+def supports_mlkem768(ip, port, sni, timeout=3):
+    """Best-effort OpenSSL probe for X25519MLKEM768 support; returns True/False or None if unsupported locally."""
+    address = f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
+    verify = "-verify_ip" if is_ip(sni) else "-verify_hostname"
+    args = ["openssl", "s_client", "-connect", address, "-servername", sni, "-tls1_3",
+            "-groups", "X25519MLKEM768", "-verify_return_error", verify, sni, "-no_ticket"]
+    try:
+        result = run_openssl(args, timeout)
+    except (subprocess.TimeoutExpired, OSError, PilotError):
+        return None
+    output = (result.stdout + result.stderr).decode(errors="replace")
+    if re.search(r"unknown elliptic curve|unknown group|invalid group|Error setting groups", output, re.I):
+        return None
+    if result.returncode == 0 and re.search(r"(?:Server|Peer|Negotiated).*X25519MLKEM768", output):
+        return True
+    return False if result.returncode == 0 or "Verify return code: 0" in output else None
+
+
 def is_ip(value):
     try:
         ipaddress.ip_address(value)

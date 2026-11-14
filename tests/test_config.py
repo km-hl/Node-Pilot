@@ -20,6 +20,12 @@ def fixture(protocol="reality", port=443):
     return n
 
 
+def xray_fixture(port=443):
+    n = fixture("reality", port=port)
+    n["core"] = "xray"
+    return n
+
+
 class ConfigTests(unittest.TestCase):
     def test_all_protocols(self):
         for protocol in ("reality", "anytls", "hysteria2"):
@@ -30,8 +36,27 @@ class ConfigTests(unittest.TestCase):
 
     def test_vision(self):
         inbound = generate(fixture())["inbounds"][0]
+        self.assertEqual(inbound["type"], "vless")
+        self.assertEqual(inbound["users"][0]["flow"], "xtls-rprx-vision")
+        self.assertEqual(inbound["tls"]["reality"]["handshake"], {"server": "example.com", "server_port": 443})
+        self.assertEqual(inbound["tls"]["reality"]["max_time_difference"], "1m")
+
+    def test_legacy_xray_vision(self):
+        inbound = generate(xray_fixture())["inbounds"][0]
         self.assertEqual(inbound["settings"]["clients"][0]["flow"], "xtls-rprx-vision")
         self.assertIn("target", inbound["streamSettings"]["realitySettings"])
+
+    def test_hysteria2_mport_validation_and_share(self):
+        n = fixture("hysteria2")
+        n["mport"] = "20000 - 50000"
+        n["hop_interval"] = 30
+        validate(n)
+        self.assertEqual(n["mport"], "20000-50000")
+        u = urlsplit(share(n))
+        self.assertEqual(parse_qs(u.query)["mport"], ["20000-50000"])
+        n["mport"] = "50000-20000"
+        with self.assertRaises(PilotError):
+            validate(n)
 
     def test_uri_roundtrip_ipv6_unicode_and_password(self):
         for protocol in ("reality", "anytls", "hysteria2"):

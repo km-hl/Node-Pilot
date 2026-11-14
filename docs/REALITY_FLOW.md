@@ -5,8 +5,8 @@ v0.2.0 默认参考 [Reality 偷自己 / Caddy 管理证书教程](https://jolly
 ## 有域名：默认自建目标
 
 1. 用户提供自己控制的域名。HTTP-01 要求全部 A/AAAA 直指 VPS；DNS-01 通过域名控制权签发，不要求 DNS 指向，但分享地址必须能访问 VPS。SNI、Xray serverNames 和证书域名使用同一值。
-2. Xray 在用户选择的公网 TCP 端口监听 VLESS/Reality/Vision；本机目标为 `127.0.0.1:<独立端口>`、xver=1。
-3. 独立 `nodepilot-caddy.service` 聚合全部自建目标，每个节点一个 loopback TLS 监听。PROXY wrapper 仅信任 127.0.0.1；不开放默认 2019 管理接口，管理器通过 root 私有 Unix socket 重载配置。
+2. 0.5.0 起新建节点默认由 **sing-box** 在用户选择的公网 TCP 端口监听 VLESS/Reality/Vision，直连本机 `127.0.0.1:<独立端口>` TLS（不使用 PROXY protocol）；已有或接管的 `core == "xray"` 节点仍保留 `xver=1` 兼容。
+3. 独立 `nodepilot-caddy.service` 聚合全部自建目标，每个节点一个 loopback TLS 监听（仅当存在 legacy/接管 `xray` `self` 节点时才为对应端口启用 `127.0.0.1` PROXY wrapper）；不开放默认 2019 管理接口，管理器通过 root 私有 Unix socket 重载配置，单元注入 `GODEBUG=multipathtcp=0` 与 `MemoryHigh=48M`/`MemoryMax=64M`。
 4. 默认由 Caddy 使用 Let's Encrypt HTTP-01 自动申请及续期，邮箱可选。HTTP-01 按实际地址族共享公网 TCP 80，TLS-ALPN 挑战关闭。占用时可选独立 certbot Cloudflare DNS-01 或导入 PEM；不停止其他网站。官方 Caddy 无需包含 DNS 插件，DNS-01 PEM 由 NodePilot timer 安全更新；测试自签名需明确选择。
 5. Caddy 默认返回简单欢迎页，也可反向代理用户指定的 HTTPS 域名；网页来源不是 SNI。关闭 Caddy HTTP/3，避免增加资源及占用 HY2 的 UDP 端口。
 6. Xray 原生检查、Caddy 原生检查、聚合配置重载及本机证书/TLS 1.3/h2 就绪后才报告创建成功。任何一步失败恢复旧修订和聚合配置。多个自建节点共用一个 Caddy；删除一个仅去掉其监听，最后一个删除时停止本项目 Caddy。
@@ -43,4 +43,4 @@ nodepilot targets --domains www.amazon.com,aws.amazon.com,www.samsung.com
 
 菜单 8 → 5 对当前目标复查，target、SNI 和原始目标域名分开处理：只有与当前目标/SNI 匹配的 selection.requested_target 域名才用于 DNS 漂移；任一 A/AAAA 仍匹配固定 IP 就不报漂移，IPv6 使用规范地址值比较。原始 IP 不适用 DNS 漂移；明确动态模式显示当前 DNS 以及本次抽测结果，dns_drift 保持空值，说明未来运行 IP 未固定。缺记录、旧域名未固定、记录失配或 DNS 失败显示未知，不以 SNI 推测，也不自动换 IP。网络复查只写独立诊断记录，不改节点或重启服务；目标/SNI/选站记录变化后不沿用旧健康诊断。
 
-菜单 8 的本机 Reality 客户端检测使用临时已校验 Xray、正常 HTTPS 验证并读取返回数据，避免把原生配置检查当作连接成功。它没有经过外部防火墙/云安全组，结果始终说明公网未验证。认证失败与目标握手失败在部分内核日志中无法可靠区分，按组合/未知原因报告，不猜测通过。
+菜单 8 的本机 Reality 客户端检测按节点 `core` 选择已校验 `sing-box`（默认）或兼容 `xray` 执行正常 HTTPS 验证并读取返回数据，避免把原生配置检查当作连接成功。它没有经过外部防火墙/云安全组，结果始终说明公网未验证。认证失败与目标握手失败在部分内核日志中无法可靠区分，按组合/未知原因报告，不猜测通过。

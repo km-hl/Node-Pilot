@@ -52,7 +52,7 @@ def setup(directory):
     ports = {"reality": available(9443), "anytls": available(8443)}
     ports["hysteria2"] = available(ports["reality"], "udp")
     with manager.locked():
-        for core in ("xray", "sing-box"):
+        for core in ("sing-box",):
             manager.update_core(core)
         nodes = []
         for protocol in ("reality", "anytls", "hysteria2"):

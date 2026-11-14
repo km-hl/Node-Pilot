@@ -8,8 +8,35 @@ from datetime import datetime, timezone
 
 from .common import PilotError
 
-PROTOCOLS = {"reality": ("xray", "tcp"), "anytls": ("sing-box", "tcp"),
+PROTOCOLS = {"reality": ("sing-box", "tcp"), "anytls": ("sing-box", "tcp"),
              "hysteria2": ("sing-box", "udp")}
+
+
+def validate_mport(value):
+    if not isinstance(value, str) or not value or len(value) > 128:
+        raise PilotError("端口跳跃 mport 格式无效（例如 20000-50000 或 20000-30000,40000）。")
+    cleaned = value.replace(" ", "")
+    parts = cleaned.split(",")
+    if not parts or any(not p for p in parts):
+        raise PilotError("端口跳跃 mport 格式无效。")
+    normalized = []
+    for part in parts:
+        if "-" in part:
+            bounds = part.split("-")
+            if len(bounds) != 2 or not all(b.isdigit() for b in bounds):
+                raise PilotError(f"无效端口范围：{part}")
+            low, high = int(bounds[0]), int(bounds[1])
+            if not (1 <= low <= high <= 65535):
+                raise PilotError(f"端口范围越界：{part}")
+            normalized.append(f"{low}-{high}")
+        else:
+            if not part.isdigit():
+                raise PilotError(f"无效端口：{part}")
+            p = int(part)
+            if not (1 <= p <= 65535):
+                raise PilotError(f"端口越界：{part}")
+            normalized.append(str(p))
+    return ",".join(normalized)
 ID = re.compile(r"n-[0-9a-f]{16}\Z")
 
 
@@ -49,11 +76,12 @@ def validate(n):
         raise PilotError("不支持的数据格式或非法节点 ID。")
     if n.get("protocol") not in PROTOCOLS:
         raise PilotError("只支持 reality、anytls、hysteria2。")
-    core, transport = PROTOCOLS[n["protocol"]]
+    default_core, transport = PROTOCOLS[n["protocol"]]
     imported = isinstance(n.get("adoption"), str) and bool(re.fullmatch(r"a-[0-9a-f]{16}", n["adoption"]))
     if "adoption" in n and not imported:
         raise PilotError("非法接管记录 ID。")
-    if n.get("core") != core or n.get("transport") != transport or n.get("service") != f"nodepilot-{n['id']}.service":
+    allowed_cores = {"sing-box", "xray"} if n["protocol"] == "reality" else {default_core}
+    if n.get("core") not in allowed_cores or n.get("transport") != transport or n.get("service") != f"nodepilot-{n['id']}.service":
         raise PilotError("节点内核、传输方式或服务关联不一致。")
     if not isinstance(n.get("name"), str) or not 1 <= len(n["name"]) <= 80 or any(ord(c) < 32 or ord(c) == 127 for c in n["name"]):
         raise PilotError("名称长度为 1–80，不能包含控制字符。")
@@ -89,6 +117,11 @@ def validate(n):
             raise PilotError("非法 Reality 目标模式。")
         if type(r.get("xver", 0)) is not int or r.get("xver", 0) not in {0, 1}:
             raise PilotError("Reality PROXY protocol 仅支持 0/1。")
+        if n.get("core") == "sing-box":
+            if r.get("xver", 0) != 0:
+                raise PilotError("sing-box Reality 不支持 PROXY protocol (xver=1)。")
+            if len(r.get("server_names", [])) != 1:
+                raise PilotError("sing-box Reality 仅支持单个 serverName（需与节点 SNI 一致）。")
         if r.get("mode") == "self":
             c = n.get("caddy", {})
             if is_ip(n["sni"]) or c.get("domain") != n["sni"] or r["server_names"] != [n["sni"]]:
@@ -136,6 +169,11 @@ def validate(n):
         if n["protocol"] == "hysteria2":
             if n.get("obfs") and (n["obfs"].get("type") != "salamander" or not isinstance(n["obfs"].get("password"), str) or len(n["obfs"].get("password", "")) < (1 if imported else 16)):
                 raise PilotError("仅支持 salamander，混淆密码至少 16 字符。")
+            if n.get("mport") is not None:
+                n["mport"] = validate_mport(n["mport"])
+            if n.get("hop_interval") is not None:
+                if type(n["hop_interval"]) is not int or not 5 <= n["hop_interval"] <= 3600:
+                    raise PilotError("端口跳跃间隔必须为 5–3600 秒的整数。")
             for f in ("up_mbps", "down_mbps"):
                 if f in n and (type(n[f]) is not int or not 1 <= n[f] <= 100000):
                     raise PilotError("带宽提示必须为 1–100000 Mbps 的整数。")

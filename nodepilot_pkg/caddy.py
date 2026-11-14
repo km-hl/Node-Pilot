@@ -30,14 +30,18 @@ def configuration(nodes, state):
             handler = {"handler": "reverse_proxy", "upstreams": [{"dial": c["upstream"]}],
                        "transport": {"protocol": "http", "tls": {"server_name": upstream}},
                        "headers": {"request": {"set": {"Host": [upstream]}}}}
-        servers[n["id"]] = {
+        server = {
             "listen": [f"127.0.0.1:{c['port']}"], "protocols": ["h1", "h2"],
             "read_header_timeout": 10000000000, "idle_timeout": 60000000000,
             "automatic_https": {"disable_redirects": True},
-            "listener_wrappers": [{"wrapper": "proxy_protocol", "allow": ["127.0.0.1/32"],
-                                   "fallback_policy": "REJECT", "timeout": 2000000000}, {"wrapper": "tls"}],
             "tls_connection_policies": [{"match": {"sni": [domain]}, "protocol_min": "tls1.3", "alpn": ["h2", "http/1.1"]}],
             "routes": [{"match": [{"host": [domain]}], "handle": [handler]}]}
+        if n.get("core") == "xray" and n["reality"].get("xver", 1) == 1:
+            server["listener_wrappers"] = [
+                {"wrapper": "proxy_protocol", "allow": ["127.0.0.1/32"], "fallback_policy": "REJECT", "timeout": 2000000000},
+                {"wrapper": "tls"},
+            ]
+        servers[n["id"]] = server
         if c["certificate_mode"] == "acme":
             issuer = {"module": "acme", "ca": "https://acme-v02.api.letsencrypt.org/directory",
                       "challenges": {"tls-alpn": {"disabled": True}}}
@@ -85,7 +89,8 @@ class Caddy:
                 "ProtectKernelModules=true\nProtectControlGroups=true\n"
                 f"ReadWritePaths={directory}\n"
                 "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n"
-                "Environment=GOMEMLIMIT=32MiB\nEnvironment=GOGC=50\nEnvironment=GOMAXPROCS=1\n"
+                "Environment=GOMEMLIMIT=32MiB\nEnvironment=GOGC=50\nEnvironment=GOMAXPROCS=1\nEnvironment=GODEBUG=multipathtcp=0\n"
+                "MemoryHigh=48M\nMemoryMax=64M\n"
                 "LimitNOFILE=4096\nTasksMax=64\n[Install]\nWantedBy=multi-user.target\n")
 
     def assert_owned(self, missing=False):
@@ -253,9 +258,10 @@ class Caddy:
         c = n["caddy"]
         cafile = c.get("certificate") if c["certificate_mode"] in {"import",'selfsigned'} else None
         deadline = time.monotonic() + timeout
+        use_proxy = n.get("core") == "xray" and n["reality"].get("xver", 1) == 1
         while True:
             try:
-                probe_reality(n["reality"]["target"], n["sni"], proxy=True, cafile=cafile, timeout=3)
+                probe_reality(n["reality"]["target"], n["sni"], proxy=use_proxy, cafile=cafile, timeout=3)
                 return
             except PilotError:
                 if time.monotonic() >= deadline or not self.active():

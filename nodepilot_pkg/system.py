@@ -162,6 +162,24 @@ def http01_bindings(answers):
     return [address for version, address in ((4, "0.0.0.0"), (6, "::")) if version in versions]
 
 
+def http01_dual_stack_ready(bindv6only_path=Path("/proc/sys/net/ipv6/bindv6only")):
+    """Verify kernel socket capability for dual-stack Certbot HTTP-01 without mutating sysctl."""
+    if not socket.has_ipv6:
+        raise PilotError("当前 Python/内核不支持 IPv6 套接字，无法执行双栈 HTTP-01；请改用 DNS-01 或 Caddy。")
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+    except OSError as error:
+        raise PilotError("当前系统禁用 IPv6 双栈套接字；请改用 Cloudflare DNS-01 或 Caddy。") from error
+    try:
+        value = bindv6only_path.read_text().strip()
+        if value not in {"0", "1"}:
+            raise PilotError("无法确认 net.ipv6.bindv6only 状态；请选择 DNS-01 或 Caddy。")
+    except OSError:
+        pass
+    return True
+
+
 def available_memory(path=Path('/proc/meminfo')):
     """Read-only estimate; no swap/sysctl changes and no hardware guarantee."""
     try:
@@ -171,6 +189,24 @@ def available_memory(path=Path('/proc/meminfo')):
         return {}
 
 
+def firewall_reference(n):
+    """Build copyable non-mutating firewall/NAT reference rules for a single node."""
+    port, proto = n["port"], n["transport"]
+    lines = [
+        f"请在主机防火墙和云安全组放行 {port}/{proto}（本程序未自动修改任何规则）。",
+        f"  ufw 参考：ufw allow {port}/{proto}",
+        f"  iptables 参考：iptables -I INPUT -p {proto} --dport {port} -j ACCEPT",
+        f"  nftables 参考：nft add rule inet filter input {proto} dport {port} accept",
+    ]
+    if n.get("mport") and proto == "udp":
+        mport_iptables = n["mport"].replace("-", ":").split(",")[0]
+        lines.append(f"  HY2 端口跳跃参考（需同步在云安全组放行 UDP {n['mport']}）：")
+        lines.append(f"    iptables -t nat -A PREROUTING -p udp --dport {mport_iptables} -j REDIRECT --to-ports {port}")
+        if ":" in n["mport"].replace("-", ":"):
+            lines.append(f"    ip6tables -t nat -A PREROUTING -p udp --dport {mport_iptables} -j REDIRECT --to-ports {port}")
+    return "\n".join(lines)
+
+
 def diagnostics(n=None):
     lines = ["防火墙只读诊断；云安全组和外部 UDP 可达性需另行验证。"]
     commands = [["ss", "-lntup"], ["free", "-m"]]
@@ -178,11 +214,15 @@ def diagnostics(n=None):
         commands.append(["ufw", "status", "verbose"])
     if shutil.which("nft"):
         commands.append(["nft", "list", "ruleset"])
+    if shutil.which("iptables"):
+        commands.append(["iptables", "-w", "2", "-L", "-n", "-v"])
+    if shutil.which("ip6tables"):
+        commands.append(["ip6tables", "-w", "2", "-L", "-n", "-v"])
     for args in commands:
         try:
             lines.append(run(args, timeout=10))
         except PilotError as e:
             lines.append(str(e))
     if n:
-        lines.append(f"请在主机防火墙和云安全组放行 {n['port']}/{n['transport']}。本程序未修改规则。")
+        lines.append(firewall_reference(n))
     return "\n".join(lines)

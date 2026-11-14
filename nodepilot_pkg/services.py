@@ -24,7 +24,8 @@ class Services:
                 "UMask=0077\nNoNewPrivileges=true\nProtectSystem=strict\nProtectHome=true\nPrivateTmp=true\n"
                 "ProtectKernelTunables=true\nProtectKernelModules=true\nProtectControlGroups=true\n"
                 "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n"
-                "Environment=GOMEMLIMIT=64MiB\nEnvironment=GOGC=50\nEnvironment=GOMAXPROCS=1\nLimitNOFILE=8192\nTasksMax=64\n"
+                "Environment=GOMEMLIMIT=64MiB\nEnvironment=GOGC=50\nEnvironment=GOMAXPROCS=1\nEnvironment=GODEBUG=multipathtcp=0\n"
+                "MemoryHigh=72M\nMemoryMax=96M\nLimitNOFILE=8192\nTasksMax=64\n"
                 "StandardOutput=journal\nStandardError=journal\n[Install]\nWantedBy=multi-user.target\n")
 
     def assert_owned(self, n, missing=False):

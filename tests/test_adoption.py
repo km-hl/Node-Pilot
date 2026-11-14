@@ -12,7 +12,7 @@ from nodepilot_pkg.common import PilotError, read_json
 from nodepilot_pkg.config import generate
 from nodepilot_pkg.importer import convert, parse_json
 from nodepilot_pkg.manager import Manager
-from test_config import fixture
+from test_config import fixture, xray_fixture
 from test_manager import FakeCores, FakeServices
 
 
@@ -31,17 +31,30 @@ class ImporterTests(unittest.TestCase):
             parse_json(b'{"a":1,"a":2}')
 
     def test_reality_identity_target_and_proxy_header_preserved(self):
-        original = fixture()
+        original = xray_fixture()
         config = generate(original)
         config["inbounds"][0]["streamSettings"]["realitySettings"]["xver"] = 1
+        config["inbounds"][0]["streamSettings"]["realitySettings"]["minClientVer"] = "1.8.0"
         config["policy"] = {"levels": {"0": {"handshake": 2}}}
         nodes = self.convert(config)
         n = nodes[0]
+        self.assertEqual(n["core"], "xray")
         self.assertEqual(n["reality"]["uuid"], original["reality"]["uuid"])
         self.assertEqual(n["reality"]["short_id"], original["reality"]["short_id"])
         generated = generate(n)
         self.assertEqual(generated["inbounds"][0]["streamSettings"]["realitySettings"]["xver"], 1)
         self.assertEqual(generated["policy"], config["policy"])
+
+    def test_singbox_vless_reality_adopted_cleanly(self):
+        original = fixture()
+        config = generate(original)
+        nodes = self.convert(config, "sing-box")
+        self.assertEqual(len(nodes), 1)
+        n = nodes[0]
+        self.assertEqual(n["core"], "sing-box")
+        self.assertEqual(n["reality"]["uuid"], original["reality"]["uuid"])
+        self.assertEqual(n["reality"]["short_id"], original["reality"]["short_id"])
+        self.assertEqual(n["reality"]["target"], original["reality"]["target"])
 
     def test_mixed_singbox_tcp_udp_credentials_and_tls_kept(self):
         a, b = fixture("anytls", 8443), fixture("hysteria2", 8443)
@@ -58,7 +71,7 @@ class ImporterTests(unittest.TestCase):
         for change in (lambda c: c.update(routing={"rules": [{"outboundTag": "block"}]}),
                        lambda c: c["inbounds"].append({"protocol": "vmess"}),
                        lambda c: c["inbounds"][0]["settings"]["clients"].append({"id": "other"})):
-            config = generate(fixture())
+            config = generate(xray_fixture())
             change(config)
             with self.assertRaises(PilotError):
                 self.convert(config)
@@ -72,7 +85,7 @@ class ImporterTests(unittest.TestCase):
         generate(node)
 
     def test_missing_original_private_key_never_generates_a_new_identity(self):
-        config = generate(fixture())
+        config = generate(xray_fixture())
         config["inbounds"][0]["streamSettings"]["realitySettings"]["privateKey"] = None
         from unittest.mock import MagicMock
         derive = MagicMock()
@@ -94,7 +107,7 @@ class FakeSource:
         self.changed, self.fail_restore = False, False
 
     def inspect(self, service):
-        return {"service": service, "core": "xray", "config": str(self.config), "files": [snapshot_file(self.config)],
+        return {"service": service, "core": "sing-box", "config": str(self.config), "files": [snapshot_file(self.config)],
                 "was_active": self.running, "enabled": self.enabled}
 
     def unchanged(self, record):

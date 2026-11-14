@@ -52,10 +52,10 @@ def audit_release(archive_path, installer_path, repo, tag):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--archive", type=Path, default=ROOT / "dist/nodepilot-0.4.0.tar.gz")
+    p.add_argument("--archive", type=Path, default=ROOT / "dist/nodepilot-0.5.0.tar.gz")
     p.add_argument("--installer", type=Path, default=ROOT / "dist/install.sh")
     p.add_argument("--repo", default="km-hl/Node-Pilot")
-    p.add_argument("--tag", default="v0.4.0")
+    p.add_argument("--tag", default="v0.5.0")
     args = p.parse_args()
     audit_release(args.archive, args.installer, args.repo, args.tag)
 

@@ -134,8 +134,8 @@ class ManagerTests(unittest.TestCase):
         self.create(n)
         saved = self.manager.get(n["id"])
         config = read_json(self.manager.revision(n["id"]) / "config.json")
-        self.assertEqual(saved["port"], config["inbounds"][0]["port"])
-        self.assertEqual(saved["sni"], config["inbounds"][0]["streamSettings"]["realitySettings"]["serverNames"][0])
+        self.assertEqual(saved["port"], config["inbounds"][0]["listen_port"])
+        self.assertEqual(saved["sni"], config["inbounds"][0]["tls"]["server_name"])
         self.assertTrue(list((self.manager.state / "backups").iterdir()))
 
     def test_port_conflict_while_service_stopped(self):
@@ -213,11 +213,11 @@ class ManagerTests(unittest.TestCase):
     def configure_core_update(self):
         from nodepilot_pkg.cores import Cores
         cores = Cores(Path(self.tmp.name) / "cores")
-        parent = cores.root / "xray"
+        parent = cores.root / "sing-box"
         old, candidate = parent / "1.0.0-aaaaaaaa", parent / "2.0.0-bbbbbbbb"
         old.mkdir(parents=True)
         candidate.mkdir()
-        cores.switch("xray", old)
+        cores.switch("sing-box", old)
         self.manager.cores = cores
         return cores, old, candidate
 
@@ -227,8 +227,8 @@ class ManagerTests(unittest.TestCase):
         self.services.fail_next = True
         with patch.object(cores, "stage", return_value=candidate), patch.object(cores, "check"):
             with self.assertRaises(PilotError), self.manager.locked():
-                self.manager.update_core("xray")
-        self.assertEqual((cores.root / "xray/current").resolve(), old)
+                self.manager.update_core("sing-box")
+        self.assertEqual((cores.root / "sing-box/current").resolve(), old)
         self.assertTrue(self.services.active(a))
         self.assertTrue(self.services.active(b))
         self.assertFalse((self.manager.state / "core-pending.json").exists())
@@ -238,48 +238,48 @@ class ManagerTests(unittest.TestCase):
         cores, old, candidate = self.configure_core_update()
         with patch.object(cores, "stage", return_value=candidate), patch.object(cores, "check", side_effect=PilotError("bad core")):
             with self.assertRaises(PilotError), self.manager.locked():
-                self.manager.update_core("xray")
-        self.assertEqual((cores.root / "xray/current").resolve(), old)
+                self.manager.update_core("sing-box")
+        self.assertEqual((cores.root / "sing-box/current").resolve(), old)
 
     def test_interrupted_core_update_recovery(self):
         n = self.create()
         cores, old, candidate = self.configure_core_update()
-        cores.switch("xray", candidate)
-        atomic_json(self.manager.state / "core-pending.json", {"core": "xray", "old": str(old)})
+        cores.switch("sing-box", candidate)
+        atomic_json(self.manager.state / "core-pending.json", {"core": "sing-box", "old": str(old)})
         with self.manager.locked():
             self.manager.recover_core()
-        self.assertEqual((cores.root / "xray/current").resolve(), old)
+        self.assertEqual((cores.root / "sing-box/current").resolve(), old)
         self.assertTrue(self.services.active(n))
 
     def test_core_recovery_preflights_all_service_owners_before_switch_or_restart(self):
         a,b=self.create(),self.create(fixture(port=8443))
-        cores,old,candidate=self.configure_core_update();cores.switch('xray',candidate)
-        journal=self.manager.state/'core-pending.json';atomic_json(journal,{'schema':2,'core':'xray','old':str(old)})
+        cores,old,candidate=self.configure_core_update();cores.switch('sing-box',candidate)
+        journal=self.manager.state/'core-pending.json';atomic_json(journal,{'schema':2,'core':'sing-box','old':str(old)})
         (self.services.units/b['service']).write_text('externally modified')
         before=journal.read_bytes()
         with patch.object(self.services,'restart') as restart,self.assertRaises(PilotError),self.manager.locked():self.manager.recover_core()
-        restart.assert_not_called();self.assertEqual((cores.root/'xray/current').resolve(),candidate)
+        restart.assert_not_called();self.assertEqual((cores.root/'sing-box/current').resolve(),candidate)
         self.assertEqual(journal.read_bytes(),before);self.assertTrue(self.services.active(a))
 
     def test_core_rollback_second_failure_keeps_intent_and_recovery_retries(self):
         n=self.create();cores,old,candidate=self.configure_core_update()
         with patch.object(cores,'stage',return_value=candidate),patch.object(cores,'check'), \
              patch.object(self.services,'restart',side_effect=PilotError('restart and rollback failed')), \
-             self.assertRaises(PilotError),self.manager.locked():self.manager.update_core('xray')
+             self.assertRaises(PilotError),self.manager.locked():self.manager.update_core('sing-box')
         pending=self.manager.state/'core-pending.json';self.assertTrue(pending.exists())
         with self.manager.locked():self.manager.recover_core();self.manager.recover_core()
-        self.assertFalse(pending.exists());self.assertEqual((cores.root/'xray/current').resolve(),old)
+        self.assertFalse(pending.exists());self.assertEqual((cores.root/'sing-box/current').resolve(),old)
         self.assertTrue(self.services.active(n))
 
     def test_corrupt_core_record_or_missing_old_binary_path_never_switches(self):
-        self.create();cores,old,candidate=self.configure_core_update();cores.switch('xray',candidate)
+        self.create();cores,old,candidate=self.configure_core_update();cores.switch('sing-box',candidate)
         pending=self.manager.state/'core-pending.json'
-        for record in ({'schema':99,'core':'xray','old':str(old)}, {'schema':2,'core':'xray'},
-                       {'core':'xray','old':str(old.parent/'missing')},{'core':'xray','old':None}):
+        for record in ({'schema':99,'core':'sing-box','old':str(old)}, {'schema':2,'core':'sing-box'},
+                       {'core':'sing-box','old':str(old.parent/'missing')},{'core':'sing-box','old':None}):
             atomic_json(pending,record);before=pending.read_bytes()
             with patch.object(self.services,'restart') as restart,self.assertRaises(PilotError),self.manager.locked():self.manager.recover_core()
             restart.assert_not_called();self.assertEqual(pending.read_bytes(),before)
-            self.assertEqual((cores.root/'xray/current').resolve(),candidate)
+            self.assertEqual((cores.root/'sing-box/current').resolve(),candidate)
 
     def test_service_unknown_fragment_query_cannot_authorize_install(self):
         from nodepilot_pkg.services import Services
