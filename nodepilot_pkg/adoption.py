@@ -64,9 +64,9 @@ class SourceService:
         if not arguments or Path(arguments[0]).resolve() != executable:
             raise PilotError("ExecStart 可执行文件关联不明确。")
         name = executable.name
-        core = "xray" if name == "xray" or name.startswith("xray-") else "sing-box" if name == "sing-box" else None
+        core = "sing-box" if name == "sing-box" else None
         if core is None:
-            raise PilotError("该服务不是直接运行 Xray/sing-box；x-ui 等面板须先导出独立配置，不能误停面板。")
+            raise PilotError("该服务不是直接运行 sing-box；x-ui 等面板或非 sing-box 服务不自动接管。")
         if not executable.is_file() or executable.stat().st_size > 180 * 1024 * 1024:
             raise PilotError("原内核文件不存在或大小异常。")
         configs, directory, i = [], None, 1
@@ -74,11 +74,11 @@ class SourceService:
             item = arguments[i]
             if item == "run":
                 i += 1
-            elif item in {"-c", "--config", "-config", "-C", "--config-directory", "-D", "--directory"} and i + 1 < len(arguments):
+            elif item in {"-c", "--config", "-C", "--config-directory", "-D", "--directory"} and i + 1 < len(arguments):
                 value = Path(arguments[i + 1])
                 if not value.is_absolute() or value.is_symlink():
                     raise PilotError("仅接管明确绝对路径的配置/目录。")
-                if item in {"-c", "--config", "-config"}:
+                if item in {"-c", "--config"}:
                     configs.append(value)
                 elif item in {"-C", "--config-directory"}:
                     if core != "sing-box" or directory is not None:

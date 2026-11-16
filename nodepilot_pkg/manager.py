@@ -159,7 +159,7 @@ class Manager:
                 block(path)
             source = r.get('source')
             if (not isinstance(source, dict) or not isinstance(source.get('service'), str) or
-                    source.get('core') not in ('xray','sing-box') or not isinstance(source.get('config'), str) or
+                    source.get('core') != 'sing-box' or not isinstance(source.get('config'), str) or
                     not isinstance(source.get('files'), list) or not source['files'] or
                     type(source.get('was_active')) is not bool or
                     source.get('enabled') not in ('enabled','enabled-runtime','disabled','static')):
@@ -250,14 +250,13 @@ class Manager:
         if managed:
             self.caddy.preflight(n, old, self.nodes())
         target_changed = not old or own_target(old) or (n["protocol"] == "reality" and any(
-            n["reality"].get(k) != old["reality"].get(k) for k in ("target", "server_names", "xver")))
+            n["reality"].get(k) != old["reality"].get(k) for k in ("target", "server_names")))
         if probe and n["protocol"] == "reality" and not own_target(n) and target_changed:
             from .targets import inspect_target, cloudflare_networks
             networks = cloudflare_networks()
             for sni in n["reality"]["server_names"]:
                 inspect_target(n["reality"]["target"], sni, networks)
-                use_proxy = n.get("core") == "xray" and bool(n["reality"].get("xver"))
-                probe_reality(n["reality"]["target"], sni, proxy=use_proxy)
+                probe_reality(n["reality"]["target"], sni)
         if old:
             self.services.assert_owned(old)
             self.backup()
@@ -508,7 +507,7 @@ class Manager:
             if not isinstance(record,dict) or type(record.get('schema',1)) is not int or record.get('schema',1) not in {1,2}:
                 raise PilotError('内核事务 schema 不受支持。')
             core = record.get("core")
-            if not isinstance(core,str) or core not in {"xray", "sing-box", "caddy"} or 'old' not in record:
+            if not isinstance(core,str) or core not in {"sing-box", "caddy"} or 'old' not in record:
                 raise PilotError("非法内核恢复记录。")
             affected=[n for n in self.nodes() if n['core']==core or (core=='caddy' and own_target(n))]
             for n in affected:self.services.assert_owned(n)

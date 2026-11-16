@@ -212,17 +212,16 @@ class Menu:
             return
         if choice != "1":
             raise PilotError("无效接管选项。")
-        self.say("仅支持独立 Xray/sing-box 的三协议标准配置；面板、复杂路由、多配置/多用户不会部分迁移。")
+        self.say("仅支持独立 sing-box 的三协议标准配置；面板、复杂路由、多配置/多用户不会部分迁移。")
         for engine in existing_engines():
             self.say(f"发现 {engine['name']}，服务 {engine['service'] or '无独立 systemd 服务'}")
-        service = self.ask("原服务名称（如 xray.service / sing-box.service）")
+        service = self.ask("原服务名称（如 sing-box.service）")
         snapshot = SourceService().inspect(service)
         raw = next(f for f in snapshot["files"] if f["path"] == snapshot["config"])
         config = parse_json(base64.b64decode(raw["data"], validate=True))
         snis = []
         for index, inbound in enumerate(config.get("inbounds", []), 1):
-            r = inbound.get("streamSettings", {}).get("realitySettings", {})
-            suggested = (r.get("serverNames") or [inbound.get("tls", {}).get("server_name", "")])[0]
+            suggested = inbound.get("tls", {}).get("server_name", "")
             snis.append(host(self.ask(f"原入站 {index} 的客户端 SNI", suggested or None)))
         server = host(self.ask("公网分享 IP/域名", self.ips["ipv4"] or self.ips["ipv6"] or None), True)
         self.ensure_core(snapshot["core"])
@@ -586,11 +585,11 @@ class Menu:
             self.say('未改动 SNI/target/认证；如需重选，请使用菜单 5 并确认链接变更。')
 
     def update(self):
-        self.say("1 安装/更新 sing-box  2 安装/更新 Caddy  3 更新 NodePilot  4 安装/更新 Xray（兼容）\n5 检查全部版本更新  0 返回")
+        self.say("1 安装/更新 sing-box  2 安装/更新 Caddy  3 更新 NodePilot  4 检查全部版本更新\n0 返回")
         choice = self.ask("选择", "0")
         if choice == "0":
             return
-        if choice == "5":
+        if choice == "4":
             self.check_updates()
             return
         if choice == "3":
@@ -600,7 +599,7 @@ class Menu:
                 online_update(self.tty_read, self.tty, selected)
                 raise EOFError()
             return
-        core = {"1": "sing-box", "2": "caddy", "4": "xray"}.get(choice)
+        core = {"1": "sing-box", "2": "caddy"}.get(choice)
         if not core:
             raise PilotError("无效选项。")
         selected = self.choose_version(core)
@@ -709,16 +708,18 @@ class Menu:
             Adoptions(self.manager).recover()
             from .dns_credentials import recover_pending
             recover_pending(self.manager.state)
-        for core in ("xray", "sing-box"):
-            for path in (f"/etc/{core}", "/etc/s-box", f"/usr/local/bin/{core}", f"/usr/bin/{core}"):
-                if Path(path).exists():
-                    self.say(f"检测到已有 {path}，NodePilot 使用独立目录。")
+        for path in ("/etc/xray", "/etc/sing-box", "/etc/s-box", "/usr/local/bin/xray", "/usr/local/bin/sing-box", "/usr/bin/xray", "/usr/bin/sing-box"):
+            if Path(path).exists():
+                self.say(f"检测到已有 {path}，NodePilot 使用独立目录。")
         for engine in existing_engines():
-            self.say(f"发现现有内核进程：{engine['name']} (PID {engine['pid']}, {engine['service'] or '未关联 systemd 单元'})；菜单 13 可选择是否接管，默认保留。")
+            if engine["name"].startswith(("sing-box", "singbox")):
+                self.say(f"发现现有内核进程：{engine['name']} (PID {engine['pid']}, {engine['service'] or '未关联 systemd 单元'})；菜单 13 可选择是否接管，默认保留。")
+            else:
+                self.say(f"发现现有外部内核进程：{engine['name']} (PID {engine['pid']}, {engine['service'] or '未关联 systemd 单元'})；NodePilot 仅管理独立 sing-box，默认保留原进程。")
         while True:
             self.say(self.style("\n================================\n      NodePilot 节点管理器\n================================", "1;36"))
             self.say(f"系统：{self.system}\n架构：{architecture()}\n公网 IPv4：{self.ips['ipv4'] or '未探测到'}\n公网 IPv6：{self.ips['ipv6'] or '未探测到'}")
-            for core in ("xray", "sing-box"):
+            for core in ("sing-box",):
                 try:
                     self.manager.cores.binary(core)
                     nodes = [n for n in self.manager.nodes() if n["core"] == core]
@@ -733,7 +734,7 @@ class Menu:
             from . import __version__
             self.say(f"NodePilot 版本：{__version__}")
             self.memory_notice()
-            self.say("1. 安装 VLESS + Reality\n2. 安装 AnyTLS\n3. 安装 Hysteria2\n4. 查看全部节点\n5. 修改节点配置\n6. 删除指定节点\n7. 查看分享链接\n8. 服务状态/日志/重启\n9. 安装/更新内核与脚本（可选版本）\n10. 备份/恢复/证书\n11. 端口与网络诊断\n12. 卸载 NodePilot\n13. 接管/归还现有 Xray 或 sing-box\n14. 检查更新版本\n0. 退出")
+            self.say("1. 安装 VLESS + Reality\n2. 安装 AnyTLS\n3. 安装 Hysteria2\n4. 查看全部节点\n5. 修改节点配置\n6. 删除指定节点\n7. 查看分享链接\n8. 服务状态/日志/重启\n9. 安装/更新内核与脚本（可选版本）\n10. 备份/恢复/证书\n11. 端口与网络诊断\n12. 卸载 NodePilot\n13. 接管/归还现有 sing-box\n14. 检查更新版本\n0. 退出")
             try:
                 choice = self.ask("请输入选项", "0")
                 if choice == "0":

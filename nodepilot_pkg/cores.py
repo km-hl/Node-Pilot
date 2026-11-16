@@ -6,7 +6,6 @@ import shutil
 import struct
 import tarfile
 import tempfile
-import zipfile
 from pathlib import Path
 
 from .common import PilotError, atomic_json, fsync_dir, private_dir, run, run_bytes
@@ -25,20 +24,12 @@ def verify_elf(path, arch):
 
 def extract_core(archive, output, core):
     # Never extractall: only a bounded regular core file, no paths/links from archives.
-    if core == "xray":
-        with zipfile.ZipFile(archive) as z:
-            entries = [i for i in z.infolist() if i.filename == "xray"]
-            if len(entries) != 1 or entries[0].file_size > 180 * 1024 * 1024:
-                raise PilotError("Xray 附件中缺少唯一、合理大小的内核。")
-            with z.open(entries[0]) as src, Path(output).open("wb") as dst:
-                shutil.copyfileobj(src, dst, 256 * 1024)
-    else:
-        with tarfile.open(archive, "r:gz") as t:
-            entries = [m for m in t if (m.name == core or m.name.endswith("/" + core)) and m.isfile()]
-            if len(entries) != 1 or entries[0].size > 180 * 1024 * 1024:
-                raise PilotError(f"{core} 附件中缺少唯一、合理大小的内核。")
-            with t.extractfile(entries[0]) as src, Path(output).open("wb") as dst:
-                shutil.copyfileobj(src, dst, 256 * 1024)
+    with tarfile.open(archive, "r:gz") as t:
+        entries = [m for m in t if (m.name == core or m.name.endswith("/" + core)) and m.isfile()]
+        if len(entries) != 1 or entries[0].size > 180 * 1024 * 1024:
+            raise PilotError(f"{core} 附件中缺少唯一、合理大小的内核。")
+        with t.extractfile(entries[0]) as src, Path(output).open("wb") as dst:
+            shutil.copyfileobj(src, dst, 256 * 1024)
 
 
 class Cores:
@@ -46,7 +37,7 @@ class Cores:
         self.root = Path(root)
 
     def binary(self, core):
-        if core not in {"xray", "sing-box", "caddy"}:
+        if core not in {"sing-box", "caddy"}:
             raise PilotError("非法内核。")
         path = self.root / core / "current" / core
         if not path.is_file() or not (path.parent / "verified.json").is_file():
@@ -64,7 +55,7 @@ class Cores:
         return stable_versions(REPOSITORIES[core], MINIMUM[core])
 
     def stage(self, core, selected="latest"):
-        if core not in {"xray", "sing-box", "caddy"}:
+        if core not in {"sing-box", "caddy"}:
             raise PilotError("非法内核。")
         arch = architecture()
         parent = private_dir(self.root / core)
@@ -74,8 +65,7 @@ class Cores:
             core_version = record["tag_name"].lstrip("v")
             if version(core_version) < MINIMUM[core]:
                 raise PilotError(f"{core} 版本低于本项目支持范围：{'.'.join(map(str, MINIMUM[core]))}。")
-            name = (f"Xray-linux-{'64' if arch == 'amd64' else 'arm64-v8a'}.zip" if core == "xray"
-                    else f"caddy_{core_version}_linux_{arch}.tar.gz" if core == "caddy"
+            name = (f"caddy_{core_version}_linux_{arch}.tar.gz" if core == "caddy"
                     else f"sing-box-{core_version}-linux-{arch}.tar.gz")
             assets = [a for a in record["assets"] if a["name"] == name]
             if len(assets) != 1:
@@ -105,8 +95,7 @@ class Cores:
 
     def check(self, n, path, binary=None):
         b = binary or self.binary(n["core"])
-        args = [b, "run", "-test", "-config", path] if n["core"] == "xray" else [b, "check", "-c", path]
-        run(args, timeout=30)
+        run([b, "check", "-c", path], timeout=30)
 
     def keypair(self, private=None):
         from .model import key
@@ -120,23 +109,18 @@ class Cores:
             if len(public) != len(prefix) + 32 or not public.startswith(prefix):
                 raise PilotError("无法解析 OpenSSL X25519 公钥。")
             return private, key(base64.urlsafe_b64encode(public[len(prefix):]).decode().rstrip("="))
-        try:
-            args = [self.binary("sing-box"), "generate", "reality-keypair"]
-        except PilotError:
-            args = [self.binary("xray"), "x25519"]
-        result = run(args)
+        result = run([self.binary("sing-box"), "generate", "reality-keypair"])
         fields = {re.sub(r"[^a-z]", "", k.lower()): v.strip() for k, v in
                   re.findall(r"^([^:\n]+):\s*([A-Za-z0-9_-]+)\s*$", result, re.MULTILINE)}
-        # Recent Xray labels the public key Password; older versions use Public key.
         a = fields.get("privatekey")
-        b = fields.get("publickey") or fields.get("passwordpublickey") or fields.get("password")
+        b = fields.get("publickey")
         if not a or not b:
             raise PilotError("无法解析 Reality 密钥输出。")
         return key(a), key(b)
 
     def prune(self, core, keep=2):
         """Remove stale core versions beyond active current + rollback candidates."""
-        if core not in {"xray", "sing-box", "caddy"} or keep < 1:
+        if core not in {"sing-box", "caddy"} or keep < 1:
             return []
         parent = self.root / core
         if not parent.is_dir():

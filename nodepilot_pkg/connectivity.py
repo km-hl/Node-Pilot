@@ -29,12 +29,6 @@ def latest(manager,n):
 def client_config(n,port):
     r = n['reality']
     address = '::1' if n['listen']=='::' else '127.0.0.1' if n['listen']=='0.0.0.0' else n['listen']
-    if n.get('core') == 'xray':
-        return {'log':{'loglevel':'warning'},'inbounds':[{'listen':'127.0.0.1','port':port,'protocol':'http','settings':{}}],
-                'outbounds':[{'protocol':'vless','settings':{'vnext':[{'address':address,'port':n['port'],
-                             'users':[{'id':r['uuid'],'encryption':'none','flow':'xtls-rprx-vision'}]}]},
-                             'streamSettings':{'network':'tcp','security':'reality','realitySettings':{
-                             'serverName':n['sni'],'fingerprint':r['fingerprint'],'password':r['public_key'],'shortId':r['short_id']}}}]}
     return {'log':{'level':'warn'},'inbounds':[{'type':'http','listen':'127.0.0.1','listen_port':port}],
             'outbounds':[{'type':'vless','tag':'proxy','server':address,'server_port':n['port'],
                           'uuid':r['uuid'],'flow':'xtls-rprx-vision',
@@ -67,11 +61,9 @@ def check(manager,n):
         with socket.socket() as sock:
             sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]
         atomic_json(tmp/'client.json',client_config(n,port))
-        client_core = 'xray' if n.get('core') == 'xray' else 'sing-box'
-        manager.cores.check({'core': client_core}, tmp/'client.json')
-        run_flag = '-config' if client_core == 'xray' else '-c'
+        manager.cores.check({'core': 'sing-box'}, tmp/'client.json')
         with (tmp/'client.log').open('wb') as log:
-            process=subprocess.Popen([str(manager.cores.binary(client_core)),'run',run_flag,str(tmp/'client.json')],stdout=log,stderr=log,
+            process=subprocess.Popen([str(manager.cores.binary('sing-box')),'run','-c',str(tmp/'client.json')],stdout=log,stderr=log,
                                      env={**__import__('os').environ,'GOMAXPROCS':'1','GOMEMLIMIT':'32MiB','GOGC':'50'})
             try:
                 for _ in range(30):

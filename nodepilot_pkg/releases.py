@@ -6,8 +6,8 @@ from pathlib import Path
 from .common import PilotError, read_json
 from .download import fetch
 
-REPOSITORIES = {"xray": "XTLS/Xray-core", "sing-box": "SagerNet/sing-box", "caddy": "caddyserver/caddy"}
-MINIMUM = {"xray": (25, 3, 6), "sing-box": (1, 12, 0), "caddy": (2, 7, 0)}
+REPOSITORIES = {"sing-box": "SagerNet/sing-box", "caddy": "caddyserver/caddy"}
+MINIMUM = {"sing-box": (1, 12, 0), "caddy": (2, 7, 0)}
 
 
 def version(value):

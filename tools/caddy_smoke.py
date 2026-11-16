@@ -104,7 +104,7 @@ def setup():
             assert m.get(a["id"]) == a and m.services.active(b)
             m.caddy.ready(a, timeout=5)
             m.caddy.ready(b, timeout=5)
-            print("real Xray restart failure: Caddy/metadata rollback OK", flush=True)
+            print("real sing-box restart failure: Caddy/metadata rollback OK", flush=True)
             # Delete one node, verify the surviving local target, then restore both.
             backup = m.backup()
             m.delete(a["id"])

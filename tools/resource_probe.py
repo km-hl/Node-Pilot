@@ -27,7 +27,7 @@ def main():
     p.add_argument("--with-caddy", action="store_true", help="同时计量临时测试的共享 Caddy 进程")
     p.add_argument('--protocol',choices=('reality','anytls','hysteria2'),help='只测一个协议；未指定时测三协议')
     p.add_argument('--lifecycle',action='store_true',help='额外执行已校验内核配置检查、节点重启和测试证书生成')
-    p.add_argument('--update-core',choices=('sing-box','xray'),help='在受限组内下载/校验指定核心当前稳定版本候选；只用于隔离状态')
+    p.add_argument('--update-core',choices=('sing-box',),help='在受限组内下载/校验指定核心当前稳定版本候选；只用于隔离状态')
     args = p.parse_args()
     root_required()
     if not 10 <= args.duration <= 300:
@@ -80,7 +80,7 @@ def main():
             os.chmod(log.name, 0o600)
             handles.append(log)
             config = args.state_dir / "nodes" / n["id"] / "current/config.json"
-            command = [str(binaries[n["core"]]), "run", "-config" if n["core"] == "xray" else "-c", str(config)]
+            command = [str(binaries[n["core"]]), "run", "-c", str(config)]
             children.append(subprocess.Popen(command, stdout=log, stderr=log, env=environment))
         if args.with_caddy:
             log = (args.private_dir / "caddy-resource.log").open("wb")
@@ -100,7 +100,7 @@ def main():
             for i,n in enumerate(record['nodes']):
                 children[i].terminate();children[i].wait(timeout=10)
                 config=args.state_dir/'nodes'/n['id']/'current/config.json'
-                children[i]=subprocess.Popen([str(binaries[n['core']]),'run','-config' if n['core']=='xray' else '-c',str(config)],stdout=handles[i],stderr=handles[i],env=environment)
+                children[i]=subprocess.Popen([str(binaries[n['core']]),'run','-c',str(config)],stdout=handles[i],stderr=handles[i],env=environment)
             with tempfile.TemporaryDirectory(prefix='certificate-work-',dir=args.private_dir) as certdir:
                 prepare({'sni':'resource.example.com','tls':{'mode':'selfsigned','certificate':'/nonexistent','key':'/nonexistent'}},Path(certdir))
             stats['lifecycle']='native checks, three/single core restart, OpenSSL certificate generation passed'
@@ -115,7 +115,7 @@ def main():
                 if n['core']==args.update_core:
                     children[i].terminate();children[i].wait(timeout=10)
                     config=args.state_dir/'nodes'/n['id']/'current/config.json'
-                    children[i]=subprocess.Popen([str(candidate/args.update_core),'run','-config' if n['core']=='xray' else '-c',str(config)],stdout=handles[i],stderr=handles[i],env=environment)
+                    children[i]=subprocess.Popen([str(candidate/args.update_core),'run','-c',str(config)],stdout=handles[i],stderr=handles[i],env=environment)
             stats['candidate_update']='official SHA/ELF/version + all affected checks + replacement startup'
         end = time.monotonic() + args.duration
         while time.monotonic() < end:

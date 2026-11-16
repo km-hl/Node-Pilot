@@ -109,7 +109,7 @@ class InputDefaultTests(unittest.TestCase):
                         menu.manager.apply.assert_not_called()
 
     def test_update_enter_accepts_checked_core_or_script(self):
-        for choice, core in (("1", "sing-box"), ("2", "caddy"), ("4", "xray"), ("3", "nodepilot")):
+        for choice, core in (("1", "sing-box"), ("2", "caddy"), ("3", "nodepilot")):
             with self.subTest(core=core):
                 menu = self.menu(choice + "\n\n\n")
                 with patch("nodepilot_pkg.project_update.online_update") as online:
@@ -121,6 +121,10 @@ class InputDefaultTests(unittest.TestCase):
                         menu.update()
                         menu.manager.update_core.assert_called_once_with(core, "latest")
                         online.assert_not_called()
+        menu = self.menu("4\n")
+        menu.check_updates = MagicMock()
+        menu.update()
+        menu.check_updates.assert_called_once_with()
 
     def test_certificate_risk_consent_stays_n_but_dependency_install_defaults_y(self):
         from nodepilot_pkg.common import PilotError

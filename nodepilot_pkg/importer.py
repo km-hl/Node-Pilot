@@ -77,69 +77,26 @@ def parse_json(data):
 
 
 def convert(config, core, server, keypair, adoption_id, snis=None):
-    if core not in {"xray", "sing-box"}:
-        raise PilotError("只接管独立 Xray/sing-box 服务。")
-    keys(config, {"log", "inbounds", "outbounds", "routing", "policy"} if core == "xray" else
-         {"log", "inbounds", "outbounds", "route"}, "原服务顶层配置")
-    if core == "xray" and config.get("routing"):
-        raise PilotError("原服务有路由规则，当前不能无损拆分，请保持原服务。")
+    if core != "sing-box":
+        raise PilotError("只接管独立 sing-box 服务。")
+    keys(config, {"log", "inbounds", "outbounds", "route"}, "原服务顶层配置")
     outbounds = config.get("outbounds", [])
     if len(outbounds) != 1:
         raise PilotError("只导入一个直接出站的标准服务；不丢弃其他出站。")
     outbound = outbounds[0]
-    if core == "xray":
-        keys(outbound, {"protocol", "tag", "settings"}, "Xray 出站")
-        if outbound.get("protocol") != "freedom" or outbound.get("settings") not in (None, {}, {"domainStrategy": "AsIs"}):
-            raise PilotError("原 Xray 出站不是标准 freedom。")
-    else:
-        keys(outbound, {"type", "tag"}, "sing-box 出站")
-        if outbound.get("type") != "direct":
-            raise PilotError("原 sing-box 出站不是标准 direct。")
-        route = config.get("route", {})
-        keys(route, {"final"}, "sing-box 路由")
-        if route.get("final") and route["final"] != outbound.get("tag"):
-            raise PilotError("原默认出站与 direct 不一致。")
+    keys(outbound, {"type", "tag"}, "sing-box 出站")
+    if outbound.get("type") != "direct":
+        raise PilotError("原 sing-box 出站不是标准 direct。")
+    route = config.get("route", {})
+    keys(route, {"final"}, "sing-box 路由")
+    if route.get("final") and route["final"] != outbound.get("tag"):
+        raise PilotError("原默认出站与 direct 不一致。")
     inbounds = config.get("inbounds", [])
     if not isinstance(inbounds, list) or not 1 <= len(inbounds) <= 16 or (snis is not None and len(snis) != len(inbounds)):
         raise PilotError("导入支持 1–16 个三协议入站，SNI 数量须一致。")
     nodes = []
     for index, inbound in enumerate(inbounds):
-        if core == "xray":
-            keys(inbound, {"tag", "listen", "port", "protocol", "settings", "streamSettings", "sniffing"}, "Xray 入站")
-            if inbound.get("protocol") != "vless":
-                raise PilotError("原服务含非 VLESS 入站，不能只迁移部分后停止原服务。")
-            stream = inbound["streamSettings"]
-            keys(stream, {"network", "security", "realitySettings"}, "Xray 传输")
-            if stream.get("network", "tcp") not in {"tcp", "raw"} or stream.get("security") != "reality":
-                raise PilotError("只导入 VLESS + TCP + Reality + Vision。")
-            settings = inbound["settings"]
-            keys(settings, {"clients", "decryption"}, "VLESS 设置")
-            clients = settings.get("clients", [])
-            if len(clients) != 1 or settings.get("decryption") != "none":
-                raise PilotError("当前导入要求每个入站一个客户端、decryption=none。")
-            client = clients[0]
-            keys(client, {"id", "flow", "email", "level"}, "VLESS 客户端")
-            if client.get("flow") != "xtls-rprx-vision" or client.get("level", 0) != 0:
-                raise PilotError("只导入 Vision / level=0 客户端。")
-            r = inbound["streamSettings"]["realitySettings"]
-            keys(r, {"show", "target", "dest", "xver", "serverNames", "privateKey", "shortIds",
-                     "minClientVer", "maxClientVer", "maxTimeDiff", "mldsa65Seed",
-                     "limitFallbackUpload", "limitFallbackDownload", "fingerprint", "publicKey", "spiderX"}, "Reality 设置")
-            if len(r.get("shortIds", [])) != 1 or not r.get("serverNames") or (r.get("target") and r.get("dest") and r["target"] != r["dest"]):
-                raise PilotError("Reality 目标/shortIds 不明确，拒绝丢失其他认证方式。")
-            sni = host(snis[index] if snis else r["serverNames"][0])
-            n = new_node("reality", f"导入 Xray {index+1}", server, inbound["port"], inbound.get("listen") or "::", sni)
-            n["core"] = "xray"
-            n["adoption"] = adoption_id
-            private, public = keypair(key(r["privateKey"]))
-            n["reality"] = dict(mode="external", uuid=client["id"], private_key=private, public_key=public,
-                short_id=r["shortIds"][0], server_names=r["serverNames"], target=r.get("target") or r.get("dest"),
-                fingerprint="chrome", xver=r.get("xver", 0))
-            if inbound.get("sniffing"):
-                n["xray_sniffing"] = inbound["sniffing"]
-            if config.get("policy"):
-                n["xray_policy"] = config["policy"]
-        elif inbound.get("type") == "vless":
+        if inbound.get("type") == "vless":
             keys(inbound, {"tag", "type", "listen", "listen_port", "users", "tls"}, "sing-box VLESS 入站")
             users = inbound.get("users", [])
             if len(users) != 1:

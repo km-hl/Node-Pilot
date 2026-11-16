@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 — Pre-release（2026-11-16）
+
+- **彻底移除 Xray 支持（纯 `sing-box + Caddy` 架构）**：
+  - 移除 [XTLS/Xray-core](https://github.com/XTLS/Xray-core) 官方内核下载/校验/版本筛选、`menu.py` 菜单 `9 -> 4` 与主菜单 Xray 状态行，以及 `model.py`/`config.py`/`cores.py`/`services.py`/`connectivity.py`/`caddy.py`/`manager.py` 中的 `core == "xray"`、`xver=1`、`proxy_protocol` 分支。
+  - 全部节点统一通过官方 `sing-box` 管理与校验；菜单 `13` 仅接管独立 `sing-box` 服务。
+  - **保留宿主机防冲突探测**：启动仍只读探测宿主机已有 `xray` 进程（如 `x-ui` 面板进程）与 `/etc/xray` 等路径并提醒保留原进程与避免端口冲突；卸载流程保留对历史残留 `/opt/nodepilot/cores/xray/` 的清理能力。
+
 ## 0.5.0 — Pre-release（2026-11-14）
 
 - **单内核 Reality 与 Go 1.26 加固**：新建 VLESS + Reality 默认改用 `sing-box` 单内核（`sing-box 1.14.4` 实测），`self` 自建目标直连 Caddy loopback TLS（取消 Caddy `listener_wrappers` 与 `proxy_protocol` 开销）；保留并兼容已有/接管 `core == "xray"` 节点的 `xver=1`、旧路径检测与 Modern Xray `realitySettings` 导入字段，新增 `sing-box` VLESS+Reality 入站接管支持。所有受管 systemd 服务单元注入 `Environment=GODEBUG=multipathtcp=0` 并配置 `MemoryHigh`/`MemoryMax`（节点 `72M`/`96M`，Caddy `48M`/`64M`）。

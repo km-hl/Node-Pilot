@@ -20,12 +20,6 @@ def fixture(protocol="reality", port=443):
     return n
 
 
-def xray_fixture(port=443):
-    n = fixture("reality", port=port)
-    n["core"] = "xray"
-    return n
-
-
 class ConfigTests(unittest.TestCase):
     def test_all_protocols(self):
         for protocol in ("reality", "anytls", "hysteria2"):
@@ -41,10 +35,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(inbound["tls"]["reality"]["handshake"], {"server": "example.com", "server_port": 443})
         self.assertEqual(inbound["tls"]["reality"]["max_time_difference"], "1m")
 
-    def test_legacy_xray_vision(self):
-        inbound = generate(xray_fixture())["inbounds"][0]
-        self.assertEqual(inbound["settings"]["clients"][0]["flow"], "xtls-rprx-vision")
-        self.assertIn("target", inbound["streamSettings"]["realitySettings"])
+    def test_xray_core_rejected(self):
+        n = fixture()
+        n["core"] = "xray"
+        with self.assertRaises(PilotError):
+            generate(n)
 
     def test_hysteria2_mport_validation_and_share(self):
         n = fixture("hysteria2")

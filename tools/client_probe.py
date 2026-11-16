@@ -55,23 +55,11 @@ def outbound(node, certificate=None):
     return result
 
 
-def xray_client(node, port):
-    uri = urlsplit(node["uri"])
-    q = {k: v[0] for k, v in parse_qs(uri.query, keep_blank_values=True).items()}
-    return {"log": {"loglevel": "warning"}, "inbounds": [{"listen": "127.0.0.1", "port": port,
-        "protocol": "http", "settings": {}}], "outbounds": [{"protocol": "vless",
-        "settings": {"vnext": [{"address": uri.hostname, "port": uri.port,
-            "users": [{"id": unquote(uri.username), "encryption": "none", "flow": q["flow"]}]}]},
-        "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {
-            "serverName": q["sni"], "fingerprint": q["fp"], "password": q["pbk"], "shortId": q["sid"]}}}]}
-
-
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--private-dir", type=Path, required=True)
     p.add_argument("--requests", type=int, default=1)
     p.add_argument("--parallel", type=int, default=1)
-    p.add_argument("--reality-core", choices=("sing-box", "xray"), default="sing-box")
     p.add_argument("--protocol", choices=("reality", "anytls", "hysteria2"))
     p.add_argument("--https-check", action="store_true", help="额外验证服务端域名解析、外网出站与端到端 HTTPS")
     args = p.parse_args()
@@ -83,7 +71,7 @@ def main():
     for n in record["nodes"]:
         if args.protocol and args.protocol != n["protocol"]:
             continue
-        core = args.reality_core if n["protocol"] == "reality" else "sing-box"
+        core = "sing-box"
         binary = cores.binary(core)
         with tempfile.TemporaryDirectory(prefix="nodepilot-client-") as directory:
             tmp = Path(directory)
@@ -93,11 +81,9 @@ def main():
             cert = args.private_dir / (n["protocol"] + "-certificate.pem")
             config = {"log": {"level": "warn"}, "inbounds": [{"type": "mixed", "listen": "127.0.0.1", "listen_port": port}],
                       "outbounds": [outbound(n, cert)], "route": {"final": "proxy"}}
-            if core == "xray":
-                config = xray_client(n, port)
             atomic_json(tmp / "client.json", config)
-            check = [binary, "run", "-test", "-config", tmp / "client.json"] if core == "xray" else [binary, "check", "-c", tmp / "client.json"]
-            start = [str(binary), "run", "-config" if core == "xray" else "-c", str(tmp / "client.json")]
+            check = [binary, "check", "-c", tmp / "client.json"]
+            start = [str(binary), "run", "-c", str(tmp / "client.json")]
             run(check)
             with (tmp / "log").open("wb") as log:
                 process = subprocess.Popen(start, stdout=log, stderr=log)

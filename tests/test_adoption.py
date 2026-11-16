@@ -12,7 +12,7 @@ from nodepilot_pkg.common import PilotError, read_json
 from nodepilot_pkg.config import generate
 from nodepilot_pkg.importer import convert, parse_json
 from nodepilot_pkg.manager import Manager
-from test_config import fixture, xray_fixture
+from test_config import fixture
 from test_manager import FakeCores, FakeServices
 
 
@@ -20,7 +20,7 @@ IDENTITY = "a-" + "a" * 16
 
 
 class ImporterTests(unittest.TestCase):
-    def convert(self, config, core="xray"):
+    def convert(self, config, core="sing-box"):
         return convert(config, core, "8.8.8.8", lambda key: (key, "B" * 43), IDENTITY)
 
     def test_jsonc_preserves_quoted_urls_and_rejects_duplicate_keys(self):
@@ -30,20 +30,9 @@ class ImporterTests(unittest.TestCase):
         with self.assertRaises(PilotError):
             parse_json(b'{"a":1,"a":2}')
 
-    def test_reality_identity_target_and_proxy_header_preserved(self):
-        original = xray_fixture()
-        config = generate(original)
-        config["inbounds"][0]["streamSettings"]["realitySettings"]["xver"] = 1
-        config["inbounds"][0]["streamSettings"]["realitySettings"]["minClientVer"] = "1.8.0"
-        config["policy"] = {"levels": {"0": {"handshake": 2}}}
-        nodes = self.convert(config)
-        n = nodes[0]
-        self.assertEqual(n["core"], "xray")
-        self.assertEqual(n["reality"]["uuid"], original["reality"]["uuid"])
-        self.assertEqual(n["reality"]["short_id"], original["reality"]["short_id"])
-        generated = generate(n)
-        self.assertEqual(generated["inbounds"][0]["streamSettings"]["realitySettings"]["xver"], 1)
-        self.assertEqual(generated["policy"], config["policy"])
+    def test_xray_adoption_rejected(self):
+        with self.assertRaises(PilotError):
+            self.convert({"inbounds": [], "outbounds": [{"protocol": "freedom"}]}, "xray")
 
     def test_singbox_vless_reality_adopted_cleanly(self):
         original = fixture()
@@ -68,10 +57,10 @@ class ImporterTests(unittest.TestCase):
         self.assertEqual(result[1]["tls"]["certificate"], b["tls"]["certificate"])
 
     def test_complex_route_extra_user_or_protocol_never_partly_imported(self):
-        for change in (lambda c: c.update(routing={"rules": [{"outboundTag": "block"}]}),
-                       lambda c: c["inbounds"].append({"protocol": "vmess"}),
-                       lambda c: c["inbounds"][0]["settings"]["clients"].append({"id": "other"})):
-            config = generate(xray_fixture())
+        for change in (lambda c: c.update(route={"rules": [{"outbound": "block"}]}),
+                       lambda c: c["inbounds"].append({"type": "vmess"}),
+                       lambda c: c["inbounds"][0]["users"].append({"uuid": "other"})):
+            config = generate(fixture())
             change(config)
             with self.assertRaises(PilotError):
                 self.convert(config)
@@ -85,12 +74,12 @@ class ImporterTests(unittest.TestCase):
         generate(node)
 
     def test_missing_original_private_key_never_generates_a_new_identity(self):
-        config = generate(xray_fixture())
-        config["inbounds"][0]["streamSettings"]["realitySettings"]["privateKey"] = None
+        config = generate(fixture())
+        config["inbounds"][0]["tls"]["reality"]["private_key"] = None
         from unittest.mock import MagicMock
         derive = MagicMock()
         with self.assertRaises(PilotError):
-            convert(config, "xray", "8.8.8.8", derive, IDENTITY)
+            convert(config, "sing-box", "8.8.8.8", derive, IDENTITY)
         derive.assert_not_called()
 
 
@@ -155,7 +144,7 @@ class AdoptionTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def prepared(self):
-        return self.adoptions.prepare("xray.service", "8.8.8.8")
+        return self.adoptions.prepare("sing-box.service", "8.8.8.8")
 
     def test_prepare_and_cancel_do_not_stop_original_service(self):
         record = self.prepared()
@@ -231,11 +220,14 @@ class SourceSafetyTests(unittest.TestCase):
     def test_critical_service_and_panel_not_stopped(self):
         source = SourceService()
         with patch("nodepilot_pkg.adoption.run") as command:
-            for service in ("ssh.service", "systemd-resolved.service", "nodepilot-caddy.service", "xray.service;id"):
+            for service in ("ssh.service", "systemd-resolved.service", "nodepilot-caddy.service", "sing-box.service;id"):
                 with self.assertRaises(PilotError):
                     source.inspect(service)
             command.assert_not_called()
-        properties = "ExecStart={ path=/usr/local/x-ui/x-ui ; argv[]=/usr/local/x-ui/x-ui ; ignore_errors=no ; pid=1 ; status=0/0 }\n"
-        with patch("nodepilot_pkg.adoption.run", return_value=properties):
-            with self.assertRaisesRegex(PilotError, "面板"):
-                source.inspect("x-ui.service")
+        for svc, props in (
+            ("x-ui.service", "ExecStart={ path=/usr/local/x-ui/x-ui ; argv[]=/usr/local/x-ui/x-ui ; ignore_errors=no ; pid=1 ; status=0/0 }\n"),
+            ("xray.service", "ExecStart={ path=/usr/local/bin/xray ; argv[]=/usr/local/bin/xray run -c /etc/xray/config.json ; ignore_errors=no ; pid=1 ; status=0/0 }\n"),
+        ):
+            with patch("nodepilot_pkg.adoption.run", return_value=props):
+                with self.assertRaisesRegex(PilotError, "sing-box"):
+                    source.inspect(svc)

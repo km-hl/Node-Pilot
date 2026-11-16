@@ -20,11 +20,10 @@ from nodepilot_pkg.model import new_node
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--download", action="store_true", help="下载校验官方内核，仅存入 .test-tools")
-    p.add_argument("--with-xray", action="store_true", help="额外下载校验 legacy Xray")
     args = p.parse_args()
     cores = Cores(ROOT / ".test-tools/cores")
     if args.download:
-        targets = ("xray", "sing-box", "caddy") if args.with_xray else ("sing-box", "caddy")
+        targets = ("sing-box", "caddy")
         for core in targets:
             destination = cores.stage(core)
             cores.switch(core, destination)
