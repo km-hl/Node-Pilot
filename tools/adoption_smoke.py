@@ -40,9 +40,8 @@ def manager_at(state):
 
 def original_unit(binary, config):
     core = binary.name
-    args = f"run -config {config}" if core == "xray" else f"run -c {config}"
     return (f"# NodePilot disposable adoption SOURCE\n[Unit]\nDescription=Disposable original {core}\n"
-            f"[Service]\nExecStart={binary} {args}\nUser=root\nUMask=0077\n"
+            f"[Service]\nExecStart={binary} run -c {config}\nUser=root\nUMask=0077\n"
             "Environment=GOMEMLIMIT=64MiB\nEnvironment=GOGC=50\nEnvironment=GOMAXPROCS=1\n"
             "[Install]\nWantedBy=multi-user.target\n")
 
@@ -59,7 +58,7 @@ def setup():
     m = manager_at(state)
     m.initialize()
     original = Cores(ROOT / ".test-tools/cores")
-    for core in ("xray", "sing-box"):
+    for core in ("sing-box",):
         source = original.binary(core)
         metadata = read_json(source.parent / "verified.json")
         destination = private_dir(state / "cores" / core / (metadata["version"] + "-" + secrets.token_hex(4)))
@@ -86,7 +85,7 @@ def setup():
         nodes.append(n)
     sources = []
     try:
-        for core in ("xray", "sing-box"):
+        for core in ("sing-box",):
             selected = [n for n in nodes if n["core"] == core]
             config = generate(selected[0])
             for node in selected[1:]:
@@ -152,7 +151,7 @@ def setup():
         atomic_json(state / "payload.json", {"port": payload_port, "bytes": 1048576, "sha256": hashlib.sha256(b"A" * 1048576).hexdigest()})
         atomic_json(state / "payload-process.json", {"pid": process.pid})
         export(state, nodes)
-        print(json.dumps({"ready": True, "private_state": str(state), "original_services": 2, "protocols": 3}), flush=True)
+        print(json.dumps({"ready": True, "private_state": str(state), "original_services": len(sources), "protocols": 3}), flush=True)
     except BaseException:
         atomic_json(state / "sources.json", {"sources": sources, "original_nodes": nodes})
         cleanup(state)

@@ -1,10 +1,10 @@
 # NodePilot
 
-当前正式 Latest 稳定版仍为 **[v0.4.0 Stable / Latest](https://github.com/km-hl/Node-Pilot/releases/tag/v0.4.0)**（2026-10-19 转正）；当前最新版本为 **[v0.5.0 Pre-release](https://github.com/km-hl/Node-Pilot/releases/tag/v0.5.0)**（待完成 `v0.5.0` 公网在线实装/跨网联通验收后评估转正）。[在线交付报告](docs/VPS_TEST_REPORT.md#online-delivery-2026-10-19) 记录 v0.4.0 公开交付证据，[Release Notes](docs/RELEASE_NOTES.md) 与 [变更记录](CHANGELOG.md) 说明功能与支持边界。[最终发布审查](docs/RELEASE_AUDIT.md) 和 [发布检查清单](docs/RELEASE_CHECKLIST.md) 保留分阶段证据，[客户端验收清单](docs/CLIENT_ACCEPTANCE.md) 区分内核实连与 GUI 未实测。
+当前正式 Latest 稳定版仍为 **[v0.4.0 Stable / Latest](https://github.com/km-hl/Node-Pilot/releases/tag/v0.4.0)**（2026-10-19 转正）；源码 `main` 当前开发版本为 `0.6.0`（彻底移除 `Xray` 支持，全面采用纯 `sing-box + Caddy` 架构；最近一个 Pre-release 为 **[v0.5.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.5.0)**）。[在线交付报告](docs/VPS_TEST_REPORT.md#online-delivery-2026-10-19) 记录 v0.4.0 公开交付证据，[Release Notes](docs/RELEASE_NOTES.md) 与 [变更记录](CHANGELOG.md) 说明功能与支持边界。[最终发布审查](docs/RELEASE_AUDIT.md) 和 [发布检查清单](docs/RELEASE_CHECKLIST.md) 保留分阶段证据，[客户端验收清单](docs/CLIENT_ACCEPTANCE.md) 区分内核实连与 GUI 未实测。
 
-轻量 VPS 节点搭建与管理工具，当前版本 `0.5.0`（Pre-release；公开 Latest 稳定版为 `0.4.0`）。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，官方预编译 **sing-box**（新三协议默认单内核）/ **Caddy**（可选 Xray 兼容旧节点），无 Web 管理后台。
+轻量 VPS 节点搭建与管理工具，当前源码版本 `0.6.0`（历史 Latest 稳定版为 `0.4.0`，最近 Pre-release 为 `0.5.0`）。支持 **VLESS + TCP + REALITY + Vision**、**AnyTLS + TLS**、**Hysteria2 + TLS + QUIC**。Bash 引导安装，Python 标准库终端菜单，全面采用官方预编译 **sing-box** + **Caddy** 单内核体系（已彻底移除 Xray 内核管理与接管支持，保留宿主机已有外部进程的只读防冲突提示），无 Web 管理后台。
 
-**v0.4.0 完整公网验收范围为 Debian 13 / amd64 / 公网 IPv4 / 约2GiB RAM（1 CPU）；v0.5.0 目前已完成 Debian 13 amd64 隔离 root/systemd、256MiB 4进程 cgroup（Pss 135.76MiB、峰值 184.09MiB、max=0/oom=0）及 Mihomo v1.19.34 本地回环实连验证，公网在线安装及跨网实连待专项验收。** 其他系统/arm64/公网 IPv6/真实双栈公网 HTTP-01/GUI 扫描导入及 256MiB 物理整机仍未验收，详见 [VPS 报告](docs/VPS_TEST_REPORT.md)。
+**v0.4.0 完整公网验收范围为 Debian 13 / amd64 / 公网 IPv4 / 约2GiB RAM（1 CPU）；v0.5.0 已在 DediRock（Debian 13 amd64）完成官方 Pre-release 公网安装、sing-box 1.14.4 + Caddy 2.11.9 实装以及本地 `sing-box` / `Mihomo v1.19.34` 经公网直连 Reality 与 AnyTLS 验证（HY2 本机回环通过，外部 UDP 受测试端链路限制未达宿主）；0.6.0 源码移除了全部 `xray` 分支。** 其他系统/arm64/公网 IPv6/真实双栈公网 HTTP-01/GUI 扫描导入及 256MiB 物理整机仍未验收，详见 [VPS 报告](docs/VPS_TEST_REPORT.md)。
 
 仓库：[km-hl/Node-Pilot](https://github.com/km-hl/Node-Pilot)，当前版本入口 [v0.4.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.4.0)。历史 [v0.3.0](https://github.com/km-hl/Node-Pilot/releases/tag/v0.3.0) 附件保持不变；Caddy 与选站实测见 [v0.2.0 验证记录](docs/CADDY_VALIDATION.md)，版本选择与接管实测见 [v0.3.0 验证记录](docs/MANAGEMENT_VALIDATION.md)。
 
@@ -42,7 +42,7 @@ nodepilot
 
 - Reality 默认建议 TCP 443，AnyTLS 建议 TCP 8443，HY2 建议 UDP 443。始终先查占用；TCP 和 UDP 同一端口号可以共存。
 - 自动生成 UUID、密码、x25519 和 shortId；可输入自己的参数。Reality 私钥不出现在分享链接中。
-- Reality 默认询问自有域名：提供域名时采用 **Caddy 证书 + 本机目标**，SNI、serverNames、证书域名一致；本机目标只监听 127.0.0.1。0.5.0 起新建 Reality 默认使用 **sing-box 单内核** 直连 Caddy TLS（无需 `proxy_protocol` / `listener_wrappers`），保留已有/接管 `core=xray` 节点的 `xver=1` 兼容。Caddy 可反向代理用户指定 HTTPS 网站，默认欢迎页减少资源消耗。无域名时才选第三方：通过 OpenSSL 实测三次可信证书/SNI、TLS 1.3、h2、实际 X25519 组及非阻塞 `X25519MLKEM768` 探测，按中位时延及波动排序；排除检测到的 CF。HTTP 跳转、403 等仅显示质量警告，不关闭证书校验。分 IPv4/IPv6 测最多各三个地址，失败继续其他 IP，保留未测/失败记录；手动与自动默认固定到本次验证的 IP，原输入另存，SNI 独立。手动高级选项可明确确认保留动态域名；CF 分项未知列出原因，默认建议重测，强制采用须两次确认。旧节点不会因升级自动换目标。详见 [Reality 流程](docs/REALITY_FLOW.md)。
+- Reality 默认询问自有域名：提供域名时采用 **Caddy 证书 + 本机目标**，SNI、serverNames、证书域名一致；本机目标只监听 127.0.0.1。0.6.0 起全面使用 **sing-box 单内核** 直连 Caddy TLS（不再使用 `proxy_protocol` / `listener_wrappers` / `xray`）。Caddy 可反向代理用户指定 HTTPS 网站，默认欢迎页减少资源消耗。无域名时才选第三方：通过 OpenSSL 实测三次可信证书/SNI、TLS 1.3、h2、实际 X25519 组及非阻塞 `X25519MLKEM768` 探测，按中位时延及波动排序；排除检测到的 CF。HTTP 跳转、403 等仅显示质量警告，不关闭证书校验。分 IPv4/IPv6 测最多各三个地址，失败继续其他 IP，保留未测/失败记录；手动与自动默认固定到本次验证的 IP，原输入另存，SNI 独立。手动高级选项可明确确认保留动态域名；CF 分项未知列出原因，默认建议重测，强制采用须两次确认。旧节点不会因升级自动换目标。详见 [Reality 流程](docs/REALITY_FLOW.md)。
 
 Reality 检测分开保存官方 IP 段、系统 A/AAAA/可见规范名、所选 IP 的 HTTP 响应头，以及 TLS1.3/X25519/h2/证书结果。HTTP 超时、拒绝连接、证书错误或无效响应头意味着 CF 头检查**未知**，即使 TLS 可用也不进入自动排名；301/302/403/404 的有效响应头仍能检查 CF 特征，不将状态码直接视为 TLS 失败。`cf_screened` 仅表示当前范围的检查完成，不能证明完全不使用 Cloudflare；系统规范名也不是完整 CNAME 链审计，未测地址另列。Google/Apple 不回到默认列表。
 
@@ -54,9 +54,9 @@ Reality 检测分开保存官方 IP 段、系统 A/AAAA/可见规范名、所选
 - HY2 可配置 salamander、认证密码、SNI、UDP 端口、可选多端口跳跃（`mport` + `hop_interval`）和带宽提示。带宽值影响拥塞控制，不能提高实际链路容量，也不等同于硬限速。
 - 只读展示 ss、内存与主机 `iptables`/`ip6tables` 诊断，并按节点生成可复制的放行及 HY2 `mport` DNAT `REDIRECT` 参考规则。**不会自动放行或修改防火墙**；请在主机防火墙和云安全组自行放行准确的 TCP/UDP 端口。规则存在也不能证明公网 UDP 可达。
 - 确认统一使用 y/n，支持 Y/N，错误输入会重新提示。0.5.0 起：回车统一采用方括号中的默认值；`[留空]` 表示可省略，密码回车保留原值或自动生成；主菜单回车退出，子菜单回车返回。新建流程中域名冲突、公网 IP 校验、端口格式与占用在输入阶段就地重问，菜单列表支持编号或节点 ID 选择，新建节点支持自动序号后缀默认名；TTY/环境变量尊重无彩色与 `NO_COLOR`/`dumb` 终端。普通安装/更新、节点创建及保存默认 y；删除、卸载、接管/归还、CA 条款、测试自签名、目标检查未知/动态解析、恢复备份、强制续期及含凭据导出仍需明确确认。
-- 菜单 14 只检查当前/最新稳定版本，不下载安装或重启；菜单 9 排序调整为 `1 sing-box 2 Caddy 3 NodePilot 4 Xray(兼容)`，可安装/更新指定版本并在更新成功后自动裁剪旧版本（内核默认保留最近 2 个、节点修订 3 个、备份 10 份；存在未完成事务时跳过裁剪）。首次按需安装内核也可选版本。
-- 菜单 13 检查、导入和接管现有独立 Xray/sing-box，也可归还原服务；0.5.0 放宽现代 Xray `realitySettings` 兼容字段并新增 `sing-box` VLESS+Reality 入站解析。默认保留原服务，只有预检全部通过且两次确认后才切换，详细范围见下文。
-- 节点列表显示 SNI/target、监听、证书状态和最近测试；服务检查结合 systemd Result/退出状态/重启次数及 MainPID 拥有的实际 TCP/UDP socket。修改前展示不含秘密的摘要并确认，提醒旧客户端链接可能失效。菜单 8 可做本机 Reality 代理 HTTPS 测试（优先按节点内核选择 `sing-box` 或兼容 `xray`），始终单独标注公网未验证。
+- 菜单 14 只检查当前/最新稳定版本，不下载安装或重启；菜单 9 提供 `1 sing-box 2 Caddy 3 NodePilot 4 检查全部版本更新`，可安装/更新指定版本并在更新成功后自动裁剪旧版本（内核默认保留最近 2 个、节点修订 3 个、备份 10 份；存在未完成事务时跳过裁剪）。首次按需安装内核也可选版本。
+- 菜单 13 检查、导入和接管现有独立 `sing-box`（支持三协议及现代 `sing-box` VLESS+Reality 入站解析），也可归还原服务；外部 `xray` / `x-ui` 进程仅只读提醒，不自动停止或接管。默认保留原服务，只有预检全部通过且两次确认后才切换，详细范围见下文。
+- 节点列表显示 SNI/target、监听、证书状态和最近测试；服务检查结合 systemd Result/退出状态/重启次数及 MainPID 拥有的实际 TCP/UDP socket。修改前展示不含秘密的摘要并确认，提醒旧客户端链接可能失效。菜单 8 可使用已校验 `sing-box` 做本机 Reality 代理 HTTPS 测试，始终单独标注公网未验证。
 - 菜单 7 支持纯 Python 终端二维码（UTF-8 半块/ASCII）输出分享链接；菜单 10 支持导出私有 Mihomo proxy 片段或完整 offline 规则 YAML（`packet-encoding: xudp`、`support-x25519mlkem768: true`、HY2 `ports`/`hop-interval`，保留 `skip-cert-verify: false`；使用私有 CIDR + `MATCH` 规则，不自动下载 `.mmdb`）。自签名须在客户端导入信任；不支持 AnyTLS 或特定字段的客户端不能据此获得协议支持。
 
 ## 数据、安全与恢复
@@ -82,7 +82,7 @@ Reality 检测分开保存官方 IP 段、系统 A/AAAA/可见规范名、所选
   app/<项目包SHA256>/             带安装文件清单的程序修订
   app/current                    原子选择当前程序版本
   program-pending.json           程序升级持久日志；候选文件逐个 SHA-256 检查
-  cores/<xray或sing-box或caddy>/<版本>/   本项目校验内核
+  cores/<sing-box或caddy>/<版本>/        本项目校验内核
 /etc/systemd/system/
   nodepilot-n-<随机ID>.service
   nodepilot-renew.service / nodepilot-renew.timer
@@ -90,11 +90,11 @@ Reality 检测分开保存官方 IP 段、系统 A/AAAA/可见规范名、所选
 /usr/local/bin/nodepilot
 ```
 
-敏感目录 0700、配置与备份 0600。管理器退出后不驻留。分享输出明确提示含认证凭据，日志也可能含敏感信息。每个节点一个独立服务，使用唯一随机 ID；不改写 `/etc/s-box/sb.json`、`/etc/sing-box/config.json` 或机器原有 Xray 配置。
+敏感目录 0700、配置与备份 0600。管理器退出后不驻留。分享输出明确提示含认证凭据，日志也可能含敏感信息。每个节点一个独立服务，使用唯一随机 ID；不改写 `/etc/s-box/sb.json`、`/etc/sing-box/config.json` 或机器原有 Xray/面板配置。
 
-修改先备份，生成独立修订，经 `xray run -test -config` / `sing-box check -c` 校验，原子切换 `current` 使元数据和配置一致。启动后检查服务是否仍 active；失败自动回滚。事务记录落盘，中断后再次进入菜单恢复。多会话和证书定时操作使用同一文件锁。
+修改先备份，生成独立修订，经 `sing-box check -c` 校验，原子切换 `current` 使元数据和配置一致。启动后检查服务是否仍 active；失败自动回滚。事务记录落盘，中断后再次进入菜单恢复。多会话和证书定时操作使用同一文件锁。
 
-Caddy 聚合配置另经 `caddy validate` 检查，通过私有 Unix 套接字 reload；管理器等待对应本机目标的证书、TLS 1.3 和 h2 就绪后才启动 Xray。失败时恢复节点修订和聚合配置。Caddy 不监听公网 TCP 443、UDP 443 或默认 2019 管理端口，不改写 `/etc/caddy/` 和系统 `caddy.service`。原有第三方 Reality 节点升级后保持原配置；主动修改目标时执行新的非 CF 筛选。
+Caddy 聚合配置另经 `caddy validate` 检查，通过私有 Unix 套接字 reload；管理器等待对应本机目标的证书、TLS 1.3 和 h2 就绪后才启动 `sing-box` 节点。失败时恢复节点修订和聚合配置。Caddy 不监听公网 TCP 443、UDP 443 或默认 2019 管理端口，不改写 `/etc/caddy/` 和系统 `caddy.service`。原有第三方 Reality 节点升级后保持原配置；主动修改目标时执行新的非 CF 筛选。
 
 服务单元内容必须与项目生成内容一致才可停止/卸载；遇到外部修改时安全中止。程序卸载根据文件清单删除，不递归删除未知用户添加的程序文件。私有备份保留在 `/etc/nodepilot/backups/`；不卸载系统依赖，不删除其他软件的证书/服务，不改 IPv6/sysctl/全局网络参数。
 
@@ -108,7 +108,7 @@ Caddy 聚合配置另经 `caddy validate` 检查，通过私有 Unix 套接字 r
 
 ## 接管与归还现有服务
 
-仅接管 systemd 直接运行的独立 Xray/sing-box：单配置文件、1–16 个本阶段协议入站，每个入站一个用户、标准 direct/freedom 出站。复杂路由、其他协议、多用户、多配置目录、内置 ACME/DNS，以及 x-ui 等面板或包装脚本均拒绝自动切换，不会只迁移部分节点后停止整项服务。JSONC 注释/尾逗号可识别。
+仅接管 systemd 直接运行的独立 `sing-box`：单配置文件、1–16 个本阶段协议入站，每个入站一个用户、标准 `direct` 出站。复杂路由、其他协议、多用户、多配置目录、内置 ACME/DNS，以及 `xray` 服务、x-ui 等面板或包装脚本均拒绝自动切换，不会只迁移部分节点后停止整项服务。JSONC 注释/尾逗号可识别。
 
 预检备份原配置、有效单元/drop-in、证书与服务启用/运行状态，复制 PEM 并执行所有入站的官方配置检查。切换保留原认证、监听端口和客户端 SNI，原文件不改写；原有 Reality 目标不重新选站。原日志输出改到独立 journal。为兼容已有客户端，只对导入节点允许保留原短密码或空 shortId，预览会提示更换；新节点仍使用强认证。
 
@@ -122,7 +122,7 @@ Caddy 聚合配置另经 `caddy validate` 检查，通过私有 Unix 套接字 r
 
 内核只从官方 GitHub 稳定发布获取。API 必须提供附件 SHA-256，下载采用 HTTPS、超时、重试和大小上限，验证压缩包后仅提取所需内核，再核对 ELF 架构和执行报告版本。不提供校验值或校验失败会中止；不回退到执行未校验文件。
 
-版本输入支持 `latest`、`list` 或完整版本号，输入 `0` 取消。列表分批读取官方最近 30 条发布；其他稳定版本可手工输入。最低 Xray 25.3.6、sing-box 1.12.0、Caddy 2.7.0，仍需通过当前节点原生检查和官方 SHA-256。v0.4.0 管理器拒绝选择旧脚本版本，以免旧代码忽略 DNS-01/卸载事务；候选期尚无可用 v0.4.0 稳定发布。
+版本输入支持 `latest`、`list` 或完整版本号，输入 `0` 取消。列表分批读取官方最近 30 条发布；其他稳定版本可手工输入。最低支持 `sing-box` 1.12.0、`caddy` 2.7.0，仍需通过当前节点原生检查和官方 SHA-256。v0.4.0 及以上管理器拒绝回退旧脚本版本，以免旧代码忽略 DNS-01/卸载事务。
 
 可用 `NODEPILOT_MIRROR=https://可信镜像前缀` 更换内核附件传输：官方失败后请求 `前缀/原始HTTPS-URL`，校验值仍来自官方 API。官方元数据不可达时安全中止；不绕过 TLS。SHA-256 + 官方 HTTPS 验证的是发布来源与下载一致性，不声称等价于独立维护者签名。
 
@@ -259,18 +259,18 @@ GitHub Actions 会执行上传范围/秘密指标检查、单元测试、shellch
 发布前先按 [上传隐私检查](CONTRIBUTING.md) 审查源码、提交身份、Git blob 和附件；本仓库示例：
 
 ```bash
-python3 tools/package.py --repo km-hl/Node-Pilot --tag v0.5.0
-python3 tools/release_audit.py --repo km-hl/Node-Pilot --tag v0.5.0
+python3 tools/package.py --repo km-hl/Node-Pilot --tag v0.6.0
+python3 tools/release_audit.py --repo km-hl/Node-Pilot --tag v0.6.0
 ```
 
-打包只生成 `dist/nodepilot-0.5.0.tar.gz`、校验文件和带**固定附件 URL / SHA-256**的 `dist/install.sh`，不自动上传。审计要求与所审查 Git HEAD 一致。现有已发布的 v0.4.0 tag（Latest）保持冻结；`v0.5.0` 为 Pre-release，可通过固定版本入口安装（离线源码验证可用 `bash install.sh --local`）：
+打包只生成 `dist/nodepilot-0.6.0.tar.gz`、校验文件和带**固定附件 URL / SHA-256**的 `dist/install.sh`，不自动上传。审计要求与所审查 Git HEAD 一致。现有已发布的 v0.4.0 tag（Latest）与 v0.5.0 Pre-release 保持冻结；新版本打包完成后应使用对应 tag 的安装器 URL（离线源码验证可用 `bash install.sh --local`）：
 
 ```bash
-bash <(curl -fsSL https://github.com/km-hl/Node-Pilot/releases/download/v0.5.0/install.sh)
+bash <(curl -fsSL https://github.com/km-hl/Node-Pilot/releases/download/v0.6.0/install.sh)
 ```
 
-修改发行代码后必须为新版本重新打包和生成校验值；文档更新不改变既有 v0.4.0 附件。项目包仅含显式允许的管理器文件，不包含运行时配置、测试内核或凭据。
+修改发行代码后必须为新版本重新打包和生成校验值；文档更新不改变既有 v0.4.0 / v0.5.0 附件。项目包仅含显式允许的管理器文件，不包含运行时配置、测试内核或凭据。
 
 ## 范围与许可
 
-本阶段不实现 XHTTP/CDN、Trojan/VMess/Shadowsocks、Web 面板、多机管理或订阅服务。流程参考需求列出的教程，协议配置以官方文档为准，不复制第三方一键脚本。源码采用 [MIT License](LICENSE)；下载的 Xray/sing-box 使用各自上游许可证。
+本阶段不实现 XHTTP/CDN、Trojan/VMess/Shadowsocks、Web 面板、多机管理或订阅服务。流程参考需求列出的教程，协议配置以官方文档为准，不复制第三方一键脚本。源码采用 [MIT License](LICENSE)；下载的 `sing-box` / `Caddy` 使用各自上游许可证。

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.privacy_audit import allowed, audit, git_candidates
-from tools.client_probe import outbound, xray_client
+from tools.client_probe import outbound
 from nodepilot_pkg.share import share
 from test_config import fixture
 
@@ -43,7 +43,7 @@ class PrivacyTests(unittest.TestCase):
             self.assertNotIn("private_key", text)
             if protocol == "reality":
                 self.assertNotIn(n["reality"]["private_key"], text)
-                self.assertEqual(xray_client(client, 10000)["outbounds"][0]["streamSettings"]["realitySettings"]["password"], n["reality"]["public_key"])
+                self.assertEqual(config["tls"]["reality"]["public_key"], n["reality"]["public_key"])
 
     def test_probe_refuses_insecure_uri(self):
         n = fixture("anytls")

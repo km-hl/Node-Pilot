@@ -59,7 +59,7 @@ def main():
     cores=Cores(base/'cores');m=Manager(base/'state',cores,Services(base/'state',Path('/run/systemd/system'),cores.root))
     try:
         source=Cores(ROOT/'.test-tools/cores')
-        for name in ('xray','sing-box'):
+        for name in ('sing-box',):
             binary=source.binary(name);version=read_json(binary.parent/'verified.json')['version']
             destination=private_dir(base/'cores'/name/(version+'-'+secrets.token_hex(4)))
             shutil.copy2(binary,destination/name);shutil.copy2(binary.parent/'verified.json',destination/'verified.json')

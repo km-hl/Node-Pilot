@@ -29,8 +29,12 @@ class SecurityTests(unittest.TestCase):
     def test_missing_digest_never_downloads(self):
         with patch("nodepilot_pkg.download.fetch") as download:
             with self.assertRaises(PilotError):
-                verified_asset({"browser_download_url": "https://github.com/XTLS/Xray-core/releases/download/v1/x.zip"}, "/tmp")
+                verified_asset({"browser_download_url": "https://github.com/SagerNet/sing-box/releases/download/v1/x.tar.gz"}, "/tmp")
         download.assert_not_called()
+
+    def test_xray_asset_rejected_as_unsupported_source(self):
+        with self.assertRaises(PilotError):
+            verified_asset({"browser_download_url": "https://github.com/XTLS/Xray-core/releases/download/v1/x.zip", "digest": "sha256:" + "a" * 64}, "/tmp")
 
     def test_foreign_asset_refused(self):
         with self.assertRaises(PilotError):
@@ -76,12 +80,11 @@ class SecurityTests(unittest.TestCase):
             with self.assertRaises(PilotError):
                 verify_elf(path, "amd64")
 
-    def test_keypair_labels_across_versions(self):
+    def test_keypair_generated_via_singbox(self):
         core = Cores()
-        for public_label in ("Public key", "Password", "Password (PublicKey)"):
-            output = "PrivateKey: " + "A" * 43 + "\n" + public_label + ": " + "B" * 43 + "\nHash32: ignored"
-            with patch.object(core, "binary", return_value=Path("/test/xray")), patch("nodepilot_pkg.cores.run", return_value=output):
-                self.assertEqual(core.keypair(), ("A" * 43, "B" * 43))
+        output = "PrivateKey: " + "A" * 43 + "\nPublicKey: " + "B" * 43
+        with patch.object(core, "binary", return_value=Path("/test/sing-box")), patch("nodepilot_pkg.cores.run", return_value=output):
+            self.assertEqual(core.keypair(), ("A" * 43, "B" * 43))
 
     def test_imported_private_key_never_passed_in_argv(self):
         import base64

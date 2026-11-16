@@ -16,7 +16,7 @@ class Services:
         validate(n)
         binary = self.cores / n["core"] / "current" / n["core"]
         config = self.state / "nodes" / n["id"] / "current/config.json"
-        args = f"run -config {config}" if n["core"] == "xray" else f"run -c {config}"
+        args = f"run -c {config}"
         return (f"# NodePilot owned schema=1 id={n['id']}\n[Unit]\n"
                 f"Description=NodePilot {n['id']}\nAfter=network-online.target\nWants=network-online.target\n"
                 f"StartLimitIntervalSec=60\nStartLimitBurst=3\n[Service]\nType=simple\nUser=root\n"

@@ -36,11 +36,6 @@ def configuration(nodes, state):
             "automatic_https": {"disable_redirects": True},
             "tls_connection_policies": [{"match": {"sni": [domain]}, "protocol_min": "tls1.3", "alpn": ["h2", "http/1.1"]}],
             "routes": [{"match": [{"host": [domain]}], "handle": [handler]}]}
-        if n.get("core") == "xray" and n["reality"].get("xver", 1) == 1:
-            server["listener_wrappers"] = [
-                {"wrapper": "proxy_protocol", "allow": ["127.0.0.1/32"], "fallback_policy": "REJECT", "timeout": 2000000000},
-                {"wrapper": "tls"},
-            ]
         servers[n["id"]] = server
         if c["certificate_mode"] == "acme":
             issuer = {"module": "acme", "ca": "https://acme-v02.api.letsencrypt.org/directory",
@@ -53,7 +48,7 @@ def configuration(nodes, state):
             servers[n["id"]]["automatic_https"]["disable"] = True
             loads.append({"certificate": c["certificate"], "key": c["key"]})
     if automate:
-        # Caddy handles HTTP-01 on this shared server; Xray retains its public port.
+        # Caddy handles HTTP-01 on this shared server; sing-box retains its public port.
         bindings = {address for n in nodes if own_target(n) and n["caddy"]["certificate_mode"] == "acme"
                     for address in n["caddy"].get("http01_listen", ["tcp4/0.0.0.0:80", "tcp6/[::]:80"])}
         # Migrate legacy metadata without depending on IPV6_V6ONLY defaults.
@@ -235,7 +230,7 @@ class Caddy:
             raise
 
     def restore_configuration(self, data):
-        """Restore exact pre-transaction bytes, including legacy listener semantics."""
+        """Restore exact pre-transaction bytes."""
         self.assert_owned(missing=True)
         if len(data)>256*1024:
             raise PilotError('Caddy 回滚配置超过上限。')
@@ -258,10 +253,9 @@ class Caddy:
         c = n["caddy"]
         cafile = c.get("certificate") if c["certificate_mode"] in {"import",'selfsigned'} else None
         deadline = time.monotonic() + timeout
-        use_proxy = n.get("core") == "xray" and n["reality"].get("xver", 1) == 1
         while True:
             try:
-                probe_reality(n["reality"]["target"], n["sni"], proxy=use_proxy, cafile=cafile, timeout=3)
+                probe_reality(n["reality"]["target"], n["sni"], cafile=cafile, timeout=3)
                 return
             except PilotError:
                 if time.monotonic() >= deadline or not self.active():

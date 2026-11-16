@@ -80,8 +80,7 @@ def validate(n):
     imported = isinstance(n.get("adoption"), str) and bool(re.fullmatch(r"a-[0-9a-f]{16}", n["adoption"]))
     if "adoption" in n and not imported:
         raise PilotError("非法接管记录 ID。")
-    allowed_cores = {"sing-box", "xray"} if n["protocol"] == "reality" else {default_core}
-    if n.get("core") not in allowed_cores or n.get("transport") != transport or n.get("service") != f"nodepilot-{n['id']}.service":
+    if n.get("core") != default_core or n.get("transport") != transport or n.get("service") != f"nodepilot-{n['id']}.service":
         raise PilotError("节点内核、传输方式或服务关联不一致。")
     if not isinstance(n.get("name"), str) or not 1 <= len(n["name"]) <= 80 or any(ord(c) < 32 or ord(c) == 127 for c in n["name"]):
         raise PilotError("名称长度为 1–80，不能包含控制字符。")

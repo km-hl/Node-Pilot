@@ -6,21 +6,6 @@ def generate(n):
     validate(n)
     if n["protocol"] == "reality":
         r = n["reality"]
-        if n["core"] == "xray":
-            result = {"log": {"loglevel": "warning"}, "inbounds": [{
-                "tag": n["id"], "listen": n["listen"], "port": n["port"],
-                "protocol": "vless", "settings": {"decryption": "none", "clients": [{
-                    "id": r["uuid"], "flow": "xtls-rprx-vision"}]},
-                "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {
-                    "show": False, "target": r["target"], "xver": 1 if r.get("mode") == "self" else r.get("xver", 0),
-                    "serverNames": r["server_names"], "privateKey": r["private_key"],
-                    "shortIds": [r["short_id"]]}}}],
-                "outbounds": [{"protocol": "freedom", "tag": "direct"}]}
-            if n.get("xray_sniffing"):
-                result["inbounds"][0]["sniffing"] = n["xray_sniffing"]
-            if n.get("xray_policy"):
-                result["policy"] = n["xray_policy"]
-            return result
         target_host, target_port = split_target(r["target"])
         inbound = {
             "type": "vless",

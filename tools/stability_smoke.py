@@ -53,7 +53,7 @@ def setup():
     atomic_json(ROOT/'.test-tools/stability-state.json',{'state':str(state)})
     source=Cores(ROOT/'.test-tools/cores')
     try:
-        for core in ('xray','sing-box','caddy'):
+        for core in ('sing-box','caddy'):
             original=source.binary(core); version=read_json(original.parent/'verified.json')['version']
             destination=private_dir(state/'cores'/core/(version+'-'+secrets.token_hex(4)))
             shutil.copy2(original,destination/core)

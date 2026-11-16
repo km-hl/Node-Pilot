@@ -129,7 +129,7 @@ class BindingIsolationTests(unittest.TestCase):
         from test_config import fixture
         node=fixture();identity='a-'+'a'*16;node['adoption']=identity
         return {'schema':1,'id':identity,'phase':phase,'authorized':phase!='prepared','nodes':[node],
-            'source':{'service':'fixture-xray.service','core':'xray','config':'/not-followed/config.json',
+            'source':{'service':'fixture-sing-box.service','core':'sing-box','config':'/not-followed/config.json',
                 'was_active':True,'enabled':'enabled','files':[{'path':'/not-followed/unit',
                     'target':'/not-followed/unit','sha256':'a'*64,'data':'Zml4dHVyZQ=='}]}}
 
@@ -146,7 +146,7 @@ class BindingIsolationTests(unittest.TestCase):
                 root,m=self.environment(d)
                 path=m.state/'uninstall.json';value=self.history(root,'removing_services')
                 if case=='program':path=root/'program-pending.json';value={'schema':2,'phase':'complete'}
-                elif case=='core':path=m.state/'core-pending.json';value={'schema':2,'core':'xray'}
+                elif case=='core':path=m.state/'core-pending.json';value={'schema':2,'core':'sing-box'}
                 elif case=='node':path=m.state/'nodes'/'abc123'/'pending.json';value={'schema':2,'kind':'node'}
                 elif case=='deletion':path=m.state/'deletions'/'abc123.json';value={'schema':2,'node':{}}
                 elif case in {'adoption','return','prepared'}:
